@@ -3,22 +3,33 @@
 Personal POC for practicing day-trading setups on replayed 1-minute charts. Each rep is a random historical day (ticker/date hidden); about half the charts contain no valid setup. Grading is on the **decision** (take vs. pass) and execution, not P&L. User-facing docs are in `README.md`.
 
 ## Ground rules
-- Keep it a simple POC that works. Don't over-engineer.
-- Use quick spikes to de-risk a step before building it out.
+- Goal: grow it step by step into something solid that the owner uses to learn trading; the owner is also learning to build it. Possible SaaS later, not a priority now.
+- Prefer incremental, well-structured changes over big rewrites. Don't over-engineer; use quick spikes to de-risk.
 - Keep it free/cheap and personal-use first.
-- Never commit API keys or anything under `dist/data/` (Alpaca data is not redistributable; it's gitignored).
+- Never commit `.env` or anything under `data/` (Alpaca data is not redistributable; both are gitignored).
 
 ## Commands
-- Run: open `dist/drill.html` directly in a browser (no server).
-- Build after editing `src/`: `npm run build` (inlines `lightweight-charts` + `src/core.js` + `src/app.js` into `dist/drill.html`). Commit the rebuilt `dist/drill.html` with source changes.
-- Test: `npm test` (`node --test tests/core.test.js`).
-- Real data via script: `APCA_API_KEY_ID=… APCA_API_SECRET_KEY=… python3 fetch_alpaca.py --days 120 --years 3` → writes `dist/data/days.js`, which the app loads automatically.
+- `npm run dev` (or `npm start`): Vite dev server on :5173. The `server/dataSync.ts` plugin reads keys from `.env`, syncs random Alpaca days into `data/days.json` in the background (incremental, saves every 10 dates), and serves `/api/data` + `/api/status`. The browser never calls Alpaca. Disabled under Vitest.
+- `npm test` (Vitest), `npm run typecheck`, `npm run build`.
+- Sync knobs in `.env`: `SYNC_DAYS` (100), `SYNC_YEARS` (3), `SYNC_SYMBOLS`. Changing symbols resets the cache.
+- Alpaca auth needs BOTH Key ID and Secret (key-only gets 401). History comes from data.alpaca.markets, not paper-api. Free plan 403s on SIP data from the last 15 min, so request end times stay 20 min behind now.
 
 ## Layout
-- `src/core.js` — pure logic shared by browser and Node: RNG + demo data, bar aggregation, VWAP, EMA/SMA/RSI/MACD, fill engine (`evalBar`, `simulateTrade`), setup evaluators (`evalORB/evalGap/evalVWAP/evalEMA/evalMACD/evalRSI`), `SETUPS`, `gradeDecision`, `scoreRep`. **Rule thresholds live here.**
-- `src/app.js` — UI: home/stats, chart (Lightweight Charts v5 + indicator panes), replay, order entry, grading sheet, IndexedDB cache, in-browser Alpaca loader.
-- `src/template.html` — markup/CSS with build placeholders.
-- `fetch_alpaca.py` — stdlib-only fallback data pull.
+- `src/core/`: pure logic, no DOM. `types.ts`, `day.ts` (time, VWAP, relVol), `candles.ts` (TF type, multi-day candle building, History), `overlays.ts` (user indicator config + computation), `indicators.ts`, `fills.ts`, `grading.ts`, `demo.ts`.
+- `src/setups/`: one file per setup exporting a `SetupDef` (label, rule text, `evaluate`, optional `preset` of indicators to switch on). Thresholds are constants at the top of each file. Register in `index.ts`.
+- `src/engine/replay.ts`: `Replay` class = one rep (clock, stepping, play, orders, fills, restart, grading). Emits changes; React reads via `useSyncExternalStore`.
+- `src/data/alpaca.ts`: Alpaca client, session/bar conversion, `fetchHistory` (Node-side).
+- `src/ui/`: React. `App.tsx` (boot, data sync, rep lifecycle), `Home.tsx`, `Session.tsx` (top bar, side panel, result sheet, keyboard), `ChartPane.tsx` (declarative lines/markers), `IndicatorPanel.tsx`, `chart/ChartView.ts` (imperative Lightweight Charts wrapper, blind axis labels), `state.ts` (settings, history, pools, toasts), `data.ts` (API calls).
+- `server/dataSync.ts`: Vite plugin. Background sync of rep days into `data/days.json`; `/api/history` fetches+caches per sym/date history in `data/history/`.
+- Tests: `tests/*.test.ts` (Vitest). Per-setup checks run for every registered setup automatically.
+- TypeScript pinned to 5.9: TS 7.0.2 with `jsx: react-jsx` mis-parses `<const T>` generics in @types/node.
+
+## Roadmap (agreed 2026-11-15)
+1. Done: React UI, timeframes 1m–1D with history, configurable indicators, restart, OHLCV legend.
+2. Trading: order ticket with $ / % risk and R:R, auto stop + take-profit, draggable lines, share sizing, $ P&L.
+3. Drawing: horizontal + trend lines.
+4. Combine mode: $50K account across reps with Topstep-style rules (verify current rules first). Each rep = one trading day.
+5. More setups: 1-2-3 trend continuation, range fade/breakout, S/R rejection, flag breakout.
 
 ## Design notes
 - Day shape: `{sym, date, pc, o[], h[], l[], c[], v[]}`, one bar/min from 09:30 ET, RTH only; missing minutes filled flat with 0 volume. Chart time = ET wall-clock treated as UTC.
@@ -26,16 +37,15 @@ Personal POC for practicing day-trading setups on replayed 1-minute charts. Each
 - Fills: last price + slippage (max $0.01 / 0.02%). Stop required before entry. Stop-and-target on the same bar → stop first. Gapped stops fill at the open.
 - Decision grade: no-trade chart → pass 100, any trade ≤20. Valid chart → Decision 50 (right dir within 3 bars) + Timing (15 − 5×bars late) + Stop 20/10/5 (good/too wide/too tight vs. trigger candle & `refStop`) + Discipline 15. Missed valid ≈ 15. >3 bars late = "Chased".
 - Free play is scored on R, capture, heat, discipline.
-- Indicator drills: 1-min bars only, VWAP off by default, only that setup's indicators drawn.
-- History/stats in `localStorage`; data in IndexedDB (per-browser).
+- Indicator drills open on 1m with their preset indicators switched on; the user can switch timeframe/indicators freely. Rules are always evaluated on 1-min bars of the rep day only.
+- History/stats in `localStorage` (per-browser); market data in `data/days.json` (local, gitignored).
 
 ## Known limitations (accepted for POC)
 - Indicators restart each day (no prior-day warmup).
-- Thresholds are defaults, not the owner's playbook — expect tuning.
+- Rule thresholds are defaults, not the owner's playbook — expect tuning.
 - Demo data skews ORB heavily valid (~315 vs 45); 50/50 sampling compensates.
 
 ## Open questions / next steps
-- **Unverified:** whether `data.alpaca.markets` allows browser CORS. In-app loader was only tested against a mock; if blocked, use `fetch_alpaca.py` or add a tiny local proxy.
 - Practice on real data, then tune thresholds.
 - Optional: 5-min indicator drills, prior-day warmup, multiple events/day, Bollinger/Stochastic drills, per-setup mistake review.
 

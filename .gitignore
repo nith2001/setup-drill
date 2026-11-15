@@ -1,6 +1,10 @@
 node_modules/
-# Real market data pulled with the user's own Alpaca key — not redistributable
-dist/data/
+dist/
+# Real market data pulled with your own Alpaca key: not redistributable
+data/
 .env
+.env.*
+!.env.example
 __pycache__/
 .DS_Store
+.gstack/
