@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setup Drill — day trading practice</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#151b23; --panel2:#1b232d; --line:#2a3440; --text:#e6edf3; --muted:#8b97a5;
+  --up:#26a69a; --down:#ef5350; --accent:#f0b429; --blue:#58a6ff; --radius:10px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
+button{font:inherit;color:inherit;cursor:pointer}
+.hidden{display:none!important}
+.mono{font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.muted{color:var(--muted)}
+.up{color:var(--up)} .down{color:var(--down)}
+
+/* ---------- Home ---------- */
+#home{max-width:980px;margin:0 auto;padding:36px 20px 60px}
+.brand{display:flex;align-items:baseline;gap:12px;margin-bottom:4px}
+.brand h1{margin:0;font-size:26px;letter-spacing:-.02em}
+.brand .tag{color:var(--muted)}
+.datapill{display:inline-flex;gap:8px;align-items:center;margin:14px 0 26px;padding:6px 12px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:13px}
+.datapill b{color:var(--text);font-weight:600}
+.datapill .dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
+.datapill.real .dot{background:var(--up)}
+.linkbtn{background:none;border:none;color:var(--blue);padding:0}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px;text-align:left;transition:border-color .15s,transform .15s;display:flex;flex-direction:column;gap:8px;min-height:180px}
+.card:hover{border-color:var(--accent);transform:translateY(-2px)}
+.card h3{margin:0;font-size:16px}
+.card p{margin:0;color:var(--muted);font-size:13px;flex:1}
+.card .stats{display:flex;gap:14px;font-size:12px;color:var(--muted)}
+.card .stats b{display:block;color:var(--text);font-size:15px}
+.card .go{color:var(--accent);font-weight:600;font-size:13px}
+.card.disabled{opacity:.45;pointer-events:none}
+.row{display:flex;flex-wrap:wrap;gap:22px;align-items:center;margin:26px 0 8px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{background:transparent;border:none;padding:6px 11px;color:var(--muted)}
+.seg button.on{background:var(--panel2);color:var(--text)}
+.lbl{color:var(--muted);font-size:12px;margin-right:8px;text-transform:uppercase;letter-spacing:.05em}
+.streak{margin-left:auto;font-size:13px;color:var(--muted)}
+.streak b{color:var(--accent);font-size:18px}
+table.hist{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}
+table.hist td,table.hist th{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left}
+table.hist th{color:var(--muted);font-weight:500;font-size:12px}
+h2{font-size:15px;margin:34px 0 4px}
+
+/* ---------- Session ---------- */
+#session{display:grid;grid-template-columns:1fr 290px;grid-template-rows:48px 1fr;height:100vh}
+.top{grid-column:1/3;display:flex;align-items:center;gap:16px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+.top .sym{font-weight:700;letter-spacing:.04em}
+.top .clock{font-size:18px}
+.top .setup{color:var(--accent);font-weight:600}
+.top .spacer{flex:1}
+.ghost{background:transparent;border:1px solid var(--line);border-radius:8px;padding:5px 11px;color:var(--muted)}
+.ghost:hover{color:var(--text);border-color:var(--muted)}
+#chartWrap{position:relative;min-width:0;min-height:0}
+#chart{position:absolute;inset:0}
+#hint{position:absolute;left:12px;top:10px;z-index:3;font-size:12px;color:var(--muted);background:rgba(13,17,23,.75);padding:4px 8px;border-radius:6px;pointer-events:none}
+.side{border-left:1px solid var(--line);background:var(--panel);padding:14px;display:flex;flex-direction:column;gap:14px;overflow:auto}
+.box{background:var(--panel2);border-radius:var(--radius);padding:12px}
+.box h4{margin:0 0 8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+.play{display:flex;gap:8px}
+.play button{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px}
+.play button.on{border-color:var(--accent);color:var(--accent)}
+.kv{display:flex;justify-content:space-between;margin:3px 0}
+.trade{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.buy,.sell{border:none;border-radius:8px;padding:11px;font-weight:700;color:#fff}
+.buy{background:var(--up)} .sell{background:var(--down)}
+.buy:disabled,.sell:disabled{opacity:.28;cursor:not-allowed}
+.wide{width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;color:var(--muted)}
+.chip:hover{color:var(--text)}
+.chip.on{border-color:var(--accent);color:var(--accent)}
+.bigR{font-size:24px;font-weight:700}
+.keys{font-size:11.5px;color:var(--muted);line-height:1.7}
+kbd{background:var(--bg);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:11px;color:var(--text)}
+.endbtn{background:transparent;border:1px solid var(--accent);color:var(--accent);border-radius:8px;padding:9px;font-weight:600}
+
+/* ---------- Result modal ---------- */
+#result{position:fixed;inset:0;background:rgba(5,8,12,.55);display:flex;align-items:flex-end;justify-content:center;z-index:20;pointer-events:none}
+#result .sheet{pointer-events:auto;width:min(760px,96vw);background:var(--panel);border:1px solid var(--line);border-radius:14px 14px 0 0;padding:20px 24px 22px;box-shadow:0 -10px 40px rgba(0,0,0,.5)}
+.resHead{display:flex;align-items:center;gap:20px}
+.score{font-size:52px;font-weight:800;line-height:1;letter-spacing:-.03em}
+.grade{font-size:13px;color:var(--muted)}
+.bars{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0 10px}
+.bar{font-size:12px;color:var(--muted)}
+.bar .track{height:6px;background:var(--bg);border-radius:3px;margin-top:5px;overflow:hidden}
+.bar .fill{height:100%;background:var(--accent)}
+.feedback{margin:8px 0 0;padding-left:18px;font-size:13.5px}
+.feedback li{margin:3px 0}
+.resActions{display:flex;gap:10px;justify-content:flex-end;margin-top:14px}
+.primary{background:var(--accent);color:#111;border:none;border-radius:8px;padding:9px 16px;font-weight:700}
+
+.inp{width:100%;margin:6px 0;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px 10px;color:var(--text);font:13px ui-monospace,Menlo,monospace}
+#toast{position:fixed;top:60px;left:50%;transform:translateX(-50%);background:#3b2a12;border:1px solid var(--accent);color:var(--text);padding:8px 14px;border-radius:8px;z-index:30;font-size:13px;transition:opacity .2s}
+@media (max-width:760px){#session{grid-template-columns:1fr;grid-template-rows:48px 55vh auto;height:auto}.side{border-left:none}.top{grid-column:1}}
+</style>
+</head>
+<body>
+
+<div id="home">
+  <div class="brand"><h1>Setup Drill</h1><span class="tag">Pick a setup. Take it only when it's really there.</span></div>
+  <div id="datapill" class="datapill"></div>
+  <div id="cards" class="cards"></div>
+
+  <div class="row">
+    <div><span class="lbl">Opening range</span><span class="seg" data-set="orMin"><button data-v="5">5m</button><button data-v="15">15m</button><button data-v="30">30m</button></span></div>
+    <div><span class="lbl">Free play length</span><span class="seg" data-set="repMin"><button data-v="60">60m</button><button data-v="120">2h</button><button data-v="999">Full day</button></span></div>
+    <div><span class="lbl">Blind</span><span class="seg" data-set="blind"><button data-v="1">On</button><button data-v="0">Off</button></span></div>
+    <div class="streak" id="streak"></div>
+  </div>
+
+  <h2>Recent reps</h2>
+  <div id="history" class="muted">No reps yet. Pick a setup above.</div>
+  <input type="file" id="fileIn" accept=".json,.js" class="hidden">
+</div>
+
+<div id="session" class="hidden">
+  <div class="top">
+    <button class="ghost" id="homeBtn">← Setups</button>
+    <span class="setup" id="setupName"></span>
+    <span class="sym" id="symName"></span>
+    <span class="clock mono" id="clock">09:30</span>
+    <span class="spacer"></span>
+    <span class="seg" id="tfSeg"><button data-v="1">1m</button><button data-v="2">2m</button><button data-v="5">5m</button></span>
+    <span class="seg" id="vwapSeg"><button data-v="1">VWAP</button></span>
+  </div>
+  <div id="chartWrap"><div id="chart"></div><div id="hint">Click the chart to place your stop</div></div>
+  <div class="side">
+    <div class="box hidden" id="ruleBox">
+      <h4>Rule: only take it if…</h4>
+      <div id="ruleText" style="font-size:12.5px;line-height:1.5"></div>
+      <div class="muted" style="font-size:11.5px;margin-top:6px">Some charts have no valid setup. Graded on the decision, not the P&amp;L.</div>
+    </div>
+    <div class="box">
+      <h4>Replay</h4>
+      <div class="play">
+        <button id="stepBtn" title="Next bar (→)">Step ▸</button>
+        <button id="playBtn" title="Play/Pause (Space)">Play</button>
+      </div>
+      <div class="chips" style="margin-top:8px" id="speedChips">
+        <button class="chip" data-v="1">1 bar/s</button><button class="chip" data-v="3">3/s</button><button class="chip" data-v="8">8/s</button><button class="chip" data-v="20">20/s</button>
+      </div>
+    </div>
+
+    <div class="box" id="orderBox">
+      <h4>Order</h4>
+      <div class="kv"><span class="muted">Last</span><span class="mono" id="lastPx">–</span></div>
+      <div class="kv"><span class="muted">Rel. volume (last bar)</span><span class="mono" id="relVol">–</span></div>
+      <div class="kv"><span class="muted">Stop</span><span class="mono" id="stopPx">click chart</span></div>
+      <div class="chips" id="stopChips" style="margin:6px 0"></div>
+      <div class="kv"><span class="muted">Target</span><span class="chips" id="tgtChips">
+        <button class="chip" data-v="0">None</button><button class="chip" data-v="1">1R</button><button class="chip" data-v="2">2R</button><button class="chip" data-v="3">3R</button></span></div>
+      <div class="trade">
+        <button class="buy" id="buyBtn">Buy <span class="muted" style="color:#d6fff8">B</span></button>
+        <button class="sell" id="sellBtn">Short <span class="muted" style="color:#ffe0e0">S</span></button>
+      </div>
+    </div>
+
+    <div class="box hidden" id="posBox">
+      <h4>Position</h4>
+      <div class="bigR mono" id="posR">0.00R</div>
+      <div class="kv"><span class="muted">Side</span><span id="posSide"></span></div>
+      <div class="kv"><span class="muted">Entry</span><span class="mono" id="posEntry"></span></div>
+      <div class="kv"><span class="muted">Stop</span><span class="mono" id="posStop"></span></div>
+      <div class="kv"><span class="muted">Target</span><span class="mono" id="posTgt"></span></div>
+      <div class="muted" style="font-size:12px;margin-top:4px">Click chart to move stop.</div>
+      <button class="wide" id="flatBtn">Flatten <kbd>F</kbd></button>
+    </div>
+
+    <div class="box">
+      <h4>This rep</h4>
+      <div class="kv"><span class="muted">Trades</span><span class="mono" id="repTrades">0</span></div>
+      <div class="kv"><span class="muted">Net</span><span class="mono" id="repNet">0.00R</span></div>
+      <div class="kv"><span class="muted">Time left</span><span class="mono" id="repLeft"></span></div>
+    </div>
+    <button class="endbtn" id="endBtn" title="Done trading: grade this rep">I'm done: grade it <kbd>E</kbd></button>
+    <div class="keys"><kbd>→</kbd> step · <kbd>Space</kbd> play · <kbd>B</kbd>/<kbd>S</kbd> buy/short · <kbd>F</kbd> flatten · <kbd>N</kbd> next rep</div>
+  </div>
+</div>
+
+<div id="loader" class="hidden" style="position:fixed;inset:0;background:rgba(5,8,12,.7);display:flex;align-items:center;justify-content:center;z-index:25">
+  <div style="width:min(520px,94vw);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px">
+    <h3 style="margin:0 0 6px">Get real candles (free)</h3>
+    <ol class="muted" style="font-size:13px;padding-left:18px;margin:0 0 14px">
+      <li>Sign up free at <a href="https://alpaca.markets" style="color:var(--blue)">alpaca.markets</a>. A paper trading account is enough, no deposit needed.</li>
+      <li>On the paper dashboard, click <b>API Keys → Generate</b> and paste both below.</li>
+    </ol>
+    <input id="alpKey" placeholder="API Key ID" class="inp" autocomplete="off">
+    <input id="alpSec" placeholder="Secret Key" class="inp" type="password" autocomplete="off">
+    <input id="alpSyms" class="inp" value="AAPL,MSFT,NVDA,TSLA,AMD,META,AMZN,GOOGL,NFLX,COIN,PLTR,SHOP,UBER,BA,JPM,XOM,SMCI,MU,SOFI,SPY">
+    <div style="display:flex;gap:10px;align-items:center;margin-top:8px"><span class="muted" style="font-size:13px">Random trading days (last 3 yrs)</span><input id="alpDays" class="inp" style="width:80px;margin:0" value="100"></div>
+    <div id="alpStatus" class="muted" style="font-size:13px;min-height:20px;margin:12px 0">Takes ~1 sec per day. Data stays in this browser. Keys are never saved.</div>
+    <div style="display:flex;gap:10px;justify-content:flex-end"><button class="ghost" id="alpClose">Cancel</button><button class="primary" id="alpGo">Download</button></div>
+  </div>
+</div>
+<div id="result" class="hidden"><div class="sheet" id="resultSheet"></div></div>
+<div id="toast" class="hidden"></div>
+
+<script>/*LIB*/</script>
+<script>/*CORE*/</script>
+<script src="data/days.js"></script>
+<script>/*APP*/</script>
+</body>
+</html>
