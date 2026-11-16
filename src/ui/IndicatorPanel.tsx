@@ -32,6 +32,7 @@ export function IndicatorPanel({ cfg, onChange, onClose }: Props) {
 
         <h4>Price chart</h4>
         <label className="indRow"><input type="checkbox" checked={cfg.vwap} onChange={(e) => set((c) => { c.vwap = e.target.checked; })} /> VWAP <span className="muted">(intraday charts)</span></label>
+        <label className="indRow"><input type="checkbox" checked={cfg.or} onChange={(e) => set((c) => { c.or = e.target.checked; })} /> Opening range <span className="muted">(high/low of the first minutes; length in Settings)</span></label>
         <label className="indRow"><input type="checkbox" checked={cfg.volume} onChange={(e) => set((c) => { c.volume = e.target.checked; })} /> Volume</label>
 
         <h4>Lower panes</h4>

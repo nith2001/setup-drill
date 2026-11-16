@@ -7,6 +7,8 @@ export interface MASpec { id: string; type: MAType; period: number; color: strin
 export interface IndicatorConfig {
   mas: MASpec[];
   vwap: boolean;
+  /** Opening-range high/low lines (length set in Settings). */
+  or: boolean;
   volume: boolean;
   rsi: { on: boolean; period: number };
   macd: { on: boolean; fast: number; slow: number; signal: number };
@@ -22,13 +24,14 @@ export const DEFAULT_INDICATORS: IndicatorConfig = {
     { id: 'sma200', type: 'sma', period: 200, color: '#ff7b72', on: false },
   ],
   vwap: true,
+  or: false,
   volume: true,
   rsi: { on: false, period: 14 },
   macd: { on: false, fast: 12, slow: 26, signal: 9 },
 };
 
 /** What a setup drill needs switched on. */
-export interface Preset { mas?: { type: MAType; period: number }[]; rsi?: boolean; macd?: boolean; vwap?: boolean }
+export interface Preset { mas?: { type: MAType; period: number }[]; rsi?: boolean; macd?: boolean; vwap?: boolean; or?: boolean }
 
 export function applyPreset(cfg: IndicatorConfig, p?: Preset): IndicatorConfig {
   const out: IndicatorConfig = structuredClone(cfg);
@@ -41,6 +44,7 @@ export function applyPreset(cfg: IndicatorConfig, p?: Preset): IndicatorConfig {
   if (p.rsi) out.rsi.on = true;
   if (p.macd) out.macd.on = true;
   if (p.vwap != null) out.vwap = p.vwap;
+  if (p.or) out.or = true;
   return out;
 }
 

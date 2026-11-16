@@ -1,12 +1,20 @@
 import { LineStyle, type SeriesMarker, type Time, type UTCTimestamp } from 'lightweight-charts';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { buildCandles, candleTimeFor, type Candle, type History, type TF } from '../core/candles';
 import type { IndicatorConfig } from '../core/overlays';
 import type { Replay } from '../engine/replay';
 import { COLORS, ChartView, type Hover, type LineSpec } from './chart/ChartView';
-import { fmtR, settings, toast } from './state';
+import { ChartOverlay } from './ChartOverlay';
+import type { Drawing, Tool } from './drawings';
+import { fmtR, settings } from './state';
 
-interface Props { rep: Replay; version: number; tf: TF; cfg: IndicatorConfig; hist: History; historyLoading: boolean }
+interface Props {
+  rep: Replay; version: number; tf: TF; cfg: IndicatorConfig; hist: History; historyLoading: boolean;
+  tool: Tool; setTool: (t: Tool) => void;
+  drawings: Drawing[]; setDrawings: (fn: (d: Drawing[]) => Drawing[]) => void;
+  selected: string | null; setSelected: (id: string | null) => void;
+  children?: ReactNode; // floating controls (replay bar)
+}
 
 const fmtVol = (v: number) => (v >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'K' : String(v));
 
@@ -23,9 +31,10 @@ function Legend({ h }: { h: Hover | null }) {
   );
 }
 
-export function ChartPane({ rep, version, tf, cfg, hist, historyLoading }: Props) {
+export function ChartPane({ rep, version, tf, cfg, hist, historyLoading, tool, setTool, drawings, setDrawings, selected, setSelected, children }: Props) {
   const el = useRef<HTMLDivElement>(null);
   const view = useRef<ChartView | null>(null);
+  const [viewState, setViewState] = useState<ChartView | null>(null);
   const cache = useRef<{ hist: History | null; map: Map<TF, Candle[]> }>({ hist: null, map: new Map() });
   const framed = useRef('');
   const [hover, setHover] = useState<Hover | null>(null);
@@ -34,12 +43,13 @@ export function ChartPane({ rep, version, tf, cfg, hist, historyLoading }: Props
   useEffect(() => {
     const v = new ChartView(el.current!);
     view.current = v;
-    v.onClick((px) => { const err = rep.setStop(px); if (err) toast(err); });
+    setViewState(v);
+    v.onClick(() => setSelected(null));
     v.onHover(setHover);
     v.setBlind(!!settings.blind);
     framed.current = '';
-    return () => { v.destroy(); view.current = null; };
-  }, [rep]);
+    return () => { v.destroy(); view.current = null; setViewState(null); };
+  }, [rep, setSelected]);
 
   useEffect(() => {
     const v = view.current;
@@ -50,7 +60,7 @@ export function ChartPane({ rep, version, tf, cfg, hist, historyLoading }: Props
     const candles = buildCandles(tf, hist, day, upto, cache.current.map);
 
     // Re-frame on new timeframe, newly loaded history, or a restart.
-    const frameKey = `${tf}|${hist.daily.length}|${hist.m5.length}|${rep.cur === rep.startIdx - 1 ? 'start' : ''}`;
+    const frameKey = `${tf}|${hist.daily.length}|${hist.m5.length}|${hist.m1?.length ?? 0}|${rep.cur === rep.startIdx - 1 ? 'start' : ''}`;
     const reframe = frameKey !== framed.current;
     framed.current = frameKey;
     v.render(candles, cfg, intraday, { reframe });
@@ -60,19 +70,13 @@ export function ChartPane({ rep, version, tf, cfg, hist, historyLoading }: Props
     const lines: LineSpec[] = [];
     if (intraday && day.pc != null) lines.push({ key: 'pc', price: day.pc, color: COLORS.grey, title: 'prev close', style: LineStyle.Dotted });
     const or = rep.openingRange;
-    if (or && intraday) {
+    if (or && intraday && cfg.or) {
       lines.push({ key: 'orh', price: or.hi, color: COLORS.blue, title: `OR${or.minutes} high`, style: LineStyle.Solid });
       lines.push({ key: 'orl', price: or.lo, color: COLORS.blue, title: `OR${or.minutes} low`, style: LineStyle.Solid });
     }
-    if (rep.pos) {
-      const p = rep.pos;
-      lines.push({ key: 'pstop', price: p.stop, color: COLORS.down, title: 'stop', style: LineStyle.Solid });
-      lines.push({ key: 'entry', price: p.entry, color: COLORS.text, title: p.side > 0 ? 'long' : 'short', style: LineStyle.Dotted });
-      if (p.target) lines.push({ key: 'tgt', price: p.target, color: COLORS.up, title: `${rep.tgtR}R`, style: LineStyle.Solid });
-    } else if (rep.stopPx != null && !rep.done) {
-      lines.push({ key: 'stop', price: rep.stopPx, color: COLORS.down, title: 'planned stop' });
-    }
     v.setLines(lines);
+    const br = rep.done ? null : rep.pos;
+    v.setExtraPrices(br ? [br.stop, br.target ?? NaN] : []);
 
     // Markers
     const t = (idx: number) => candleTimeFor(day.date, idx, tf) as UTCTimestamp;
@@ -86,12 +90,13 @@ export function ChartPane({ rep, version, tf, cfg, hist, historyLoading }: Props
     v.setMarkers(m);
   }, [rep, version, tf, cfg, hist]);
 
-  const needsHistory = tf !== 1 && hist.daily.length === 0 && hist.m5.length === 0;
+  const needsHistory = (tf === 1 ? !hist.m1?.length : hist.daily.length === 0 && hist.m5.length === 0) && (historyLoading || tf !== 1);
   return (
     <div id="chartWrap">
       <div id="chart" ref={el} />
       <Legend h={hover ?? lastBar} />
-      {!rep.pos && rep.stopPx == null && !rep.done && <div id="hint">Click the chart to place your stop</div>}
+      <ChartOverlay view={viewState} rep={rep} version={version} tool={tool} setTool={setTool} drawings={drawings} setDrawings={setDrawings} selected={selected} setSelected={setSelected} />
+      {children}
       {needsHistory && <div className="histnote">{historyLoading ? 'Loading earlier days…' : 'No earlier days available for this chart (showing this day only).'}</div>}
     </div>
   );

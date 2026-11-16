@@ -2,6 +2,8 @@
 import { prepDay } from '../core/day';
 import { DEFAULT_INDICATORS, type IndicatorConfig } from '../core/overlays';
 import type { Dataset, Eval } from '../core/types';
+import { DEFAULT_ORDER, type OrderSettings } from '../engine/replay';
+import { journal } from './journalStore';
 import { FREE_PLAY, SETUP_BY_ID, SETUPS, evaluate } from '../setups';
 
 /** localStorage JSON wrapper that never throws (private mode, blocked storage). */
@@ -14,19 +16,16 @@ export const store = {
   },
 };
 
-export interface Settings { orMin: number; repMin: number; blind: number }
-export const settings: Settings = Object.assign({ orMin: 15, repMin: 120, blind: 1 }, store.get<Partial<Settings>>('drill.settings', {}));
+/** fpStart: 1 = free play starts at a random time (open to 2h before close), 0 = at the open. */
+export interface Settings { orMin: number; repMin: number; blind: number; fpStart: number }
+export const settings: Settings = Object.assign({ orMin: 15, repMin: 120, blind: 1, fpStart: 1 }, store.get<Partial<Settings>>('drill.settings', {}));
 export const saveSettings = () => store.set('drill.settings', settings);
 
+export const loadOrder = (): OrderSettings => ({ ...DEFAULT_ORDER, ...store.get<Partial<OrderSettings>>('drill.order', {}) });
+export const saveOrder = (o: OrderSettings) => store.set('drill.order', o);
 export const loadIndicators = (): IndicatorConfig => ({ ...structuredClone(DEFAULT_INDICATORS), ...store.get<Partial<IndicatorConfig>>('drill.indicators', {}) });
 export const saveIndicators = (c: IndicatorConfig) => store.set('drill.indicators', c);
 
-export interface HistoryEntry {
-  setup: string; sym: string; date: string; trades: number; netR: number;
-  score: number | null; verdict: string | null; correct: boolean | null; ts: number;
-}
-export const history: HistoryEntry[] = store.get<HistoryEntry[]>('drill.history', []);
-export function addHistory(h: HistoryEntry) { history.push(h); store.set('drill.history', history); }
 
 interface PoolEntry { i: number; ev?: Eval }
 type Pools = Record<string, { valid: PoolEntry[]; none: PoolEntry[] }>;
@@ -59,7 +58,7 @@ export function pickDay(id: string): PoolEntry | undefined {
     const P = app.pools[id];
     pool = (Math.random() < 0.5 && P.valid.length) || !P.none.length ? P.valid : P.none;
   }
-  const recent = new Set(history.slice(-60).map((x) => x.sym + x.date));
+  const recent = new Set(journal.entries.slice(-60).map((x) => x.sym + x.date));
   const fresh = pool.filter((p) => !recent.has(app.data.days[p.i].sym + app.data.days[p.i].date));
   const list = fresh.length ? fresh : pool;
   return list[Math.floor(Math.random() * list.length)];

@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import path from 'node:path';
 import { defineConfig, loadEnv } from 'vite';
 import { dataSync } from './server/dataSync';
+import { journal } from './server/journal';
 import { DEFAULT_SYMBOLS } from './src/data/alpaca';
 
 export default defineConfig(({ mode }) => {
@@ -13,6 +14,7 @@ export default defineConfig(({ mode }) => {
   return {
     // No data sync during tests (Vitest loads this config too).
     plugins: [react(), ...(process.env.VITEST ? [] : [
+      journal(path.resolve('journal/journal.json')),
       dataSync({
         key: env.APCA_API_KEY_ID,
         secret: env.APCA_API_SECRET_KEY,
@@ -22,7 +24,7 @@ export default defineConfig(({ mode }) => {
         file: path.resolve('data/days.json'),
       }),
     ])],
-    server: { port: 5173, open: true, watch: { ignored: ['**/data/**'] } },
+    server: { port: 5173, open: true, watch: { ignored: ['**/data/**', '**/journal/**'] } },
     build: { target: 'es2022' },
     test: { include: ['tests/**/*.test.ts'] },
   };

@@ -1,16 +1,31 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+// Replay screen, laid out like TradingView: top toolbar, left drawing tools, chart with a
+// floating replay bar, order panel on the right, account/positions panel at the bottom.
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { EMPTY_HISTORY, TFS, tfLabel, type History, type TF } from '../core/candles';
 import { hhmm, relVol } from '../core/day';
-import { r2 } from '../core/math';
 import { applyPreset, type IndicatorConfig } from '../core/overlays';
-import { SPEEDS, type Replay } from '../engine/replay';
+import { SPEEDS, type OrderSettings, type Replay } from '../engine/replay';
 import { FREE_PLAY } from '../setups';
+import { AccountPanel } from './AccountPanel';
 import { ChartPane } from './ChartPane';
 import { fetchHistory } from './data';
+import type { Drawing, Tool } from './drawings';
 import { IndicatorPanel } from './IndicatorPanel';
-import { app, cls, fmtR, loadIndicators, saveIndicators, settings, store, toast } from './state';
+import { ReviewBox } from './Journal';
+import { OrderTicket, PositionCard, usd } from './OrderTicket';
+import { app, cls, fmtR, loadIndicators, saveIndicators, saveOrder, settings, store, toast } from './state';
 
 interface Props { rep: Replay; onHome: () => void; onNext: () => void }
+
+const TOOLS: { id: Tool; label: string; key: string; icon: string }[] = [
+  { id: 'cursor', label: 'Cursor', key: 'Esc', icon: 'M5 3l14 8-6 2-3 6z' },
+  { id: 'trend', label: 'Trend line', key: 'Alt+T', icon: 'M4 20L20 4M4 20a1.5 1.5 0 1 0 0 .01M20 4a1.5 1.5 0 1 0 0 .01' },
+  { id: 'hline', label: 'Horizontal line', key: 'Alt+H', icon: 'M3 12h18M12 12a1.5 1.5 0 1 0 0 .01' },
+];
+
+function Icon({ d }: { d: string }) {
+  return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>;
+}
 
 export function Session({ rep, onHome, onNext }: Props) {
   const version = useSyncExternalStore(rep.subscribe, rep.getVersion);
@@ -20,9 +35,16 @@ export function Session({ rep, onHome, onNext }: Props) {
   const [histLoading, setHistLoading] = useState(true);
   const [showInd, setShowInd] = useState(false);
   const [sheetHidden, setSheetHidden] = useState(false);
+  const [tool, setTool] = useState<Tool>('cursor');
+  const [drawings, setDrawingsState] = useState<Drawing[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [bottomOpen, setBottomOpen] = useState(() => store.get('drill.bottomOpen', true));
 
   const setTf = (t: TF) => { setTfState(t); store.set('drill.tf', t); };
   const setCfg = (c: IndicatorConfig) => { setCfgState(c); saveIndicators(c); };
+  const setDrawings = useCallback((fn: (d: Drawing[]) => Drawing[]) => setDrawingsState(fn), []);
+  const onOrder = (patch: Partial<OrderSettings>) => { rep.setOrder(patch); saveOrder(rep.order); };
+  const setBottom = (o: boolean) => { setBottomOpen(o); store.set('drill.bottomOpen', o); };
 
   useEffect(() => {
     let live = true;
@@ -38,8 +60,12 @@ export function Session({ rep, onHome, onNext }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest('input, select, textarea')) return;
-      const k = e.key.toLowerCase();
-      if (k === 'arrowright') { e.preventDefault(); if (e.shiftKey) rep.stepMinute(); else rep.stepBar(tf); }
+      const k = e.key.toLowerCase(), code = e.code;
+      if (e.altKey && code === 'KeyT') { e.preventDefault(); setTool('trend'); return; }
+      if (e.altKey && code === 'KeyH') { e.preventDefault(); setTool('hline'); return; }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if ((k === 'delete' || k === 'backspace') && selected) { setDrawingsState((ds) => ds.filter((d) => d.id !== selected)); setSelected(null); }
+      else if (k === 'arrowright') { e.preventDefault(); if (e.shiftKey) rep.stepMinute(); else rep.stepBar(tf); }
       else if (k === ' ') { e.preventDefault(); rep.togglePlay(); }
       else if (k === 'b') say(rep.enter(1));
       else if (k === 's') say(rep.enter(-1));
@@ -54,99 +80,97 @@ export function Session({ rep, onHome, onNext }: Props) {
     return () => document.removeEventListener('keydown', onKey);
   });
 
-  const lp = rep.last, rv = relVol(rep.day, rep.cur);
-  const chips: [string, number][] = [];
-  const or = rep.openingRange;
-  if (or) chips.push(['OR low', or.lo], ['OR high', or.hi]);
-  let lo5 = Infinity, hi5 = -Infinity;
-  for (let i = Math.max(0, rep.cur - 4); i <= rep.cur; i++) { lo5 = Math.min(lo5, rep.day.l[i]); hi5 = Math.max(hi5, rep.day.h[i]); }
-  chips.push(['5-bar low', r2(lo5 - 0.01)], ['5-bar high', r2(hi5 + 0.01)]);
-  const p = rep.pos, posR = p ? (p.side * (lp - p.entry)) / p.risk : 0;
+  const rv = relVol(rep.day, rep.cur);
   const res = rep.result;
+  const chg = rep.day.pc ? ((rep.last - rep.day.pc) / rep.day.pc) * 100 : null;
 
   return (
-    <div id="session">
-      <div className="top">
-        <button className="ghost" onClick={onHome}>← Setups</button>
-        <span className="setup">{rep.def?.label ?? FREE_PLAY.label}</span>
-        <span className="sym">{settings.blind ? '??? · hidden date' : `${rep.day.sym} · ${rep.day.date}`}</span>
-        <span className="clock mono">{hhmm(rep.cur)}</span>
-        <span className="spacer" />
-        <span className="seg" title="Timeframe (keys 1–6)">
-          {TFS.map((t) => <button key={String(t)} className={t === tf ? 'on' : ''} onClick={() => setTf(t)}>{tfLabel(t)}</button>)}
+    <div id="session" className={`tv ${bottomOpen ? '' : 'bottomClosed'}`}>
+      {/* ---------- Top toolbar ---------- */}
+      <header className="tvTop">
+        <button className="tbtn" onClick={onHome} title="Back to setups">←</button>
+        <div className="symBox">
+          <b>{settings.blind ? '???' : rep.day.sym}</b>
+          <span className="muted small">{settings.blind ? 'hidden date' : rep.day.date}</span>
+        </div>
+        <div className="sep" />
+        <span className="tfGroup" title="Timeframe (keys 1–6)">
+          {TFS.map((t) => <button key={String(t)} className={`tbtn ${t === tf ? 'on' : ''}`} onClick={() => setTf(t)}>{tfLabel(t)}</button>)}
         </span>
-        <button className="ghost" onClick={() => setShowInd(true)} title="Indicators (I)">Indicators</button>
-      </div>
+        <div className="sep" />
+        <button className="tbtn" onClick={() => setShowInd(true)} title="Indicators (I)">ƒx Indicators</button>
+        <div className="sep" />
+        <span className="setupName">{rep.def?.label ?? FREE_PLAY.label}</span>
+        <span className="spacer" />
+        <span className="quote mono">
+          <b>{rep.last.toFixed(2)}</b>
+          {chg != null && <span className={chg >= 0 ? 'up' : 'down'}> {chg >= 0 ? '+' : ''}{chg.toFixed(2)}%</span>}
+          <span className="muted"> · RVol <span className={rv >= 1.5 ? 'up' : ''}>{rv.toFixed(1)}×</span></span>
+        </span>
+        {!rep.done
+          ? <button className="tbtn accent" onClick={() => rep.end()} title="Done trading: grade this rep (E)">Finish &amp; grade</button>
+          : sheetHidden && <button className="tbtn accent" onClick={() => setSheetHidden(false)}>Show grade</button>}
+      </header>
 
-      <ChartPane rep={rep} version={version} tf={tf} cfg={cfg} hist={hist} historyLoading={histLoading} />
+      {/* ---------- Left drawing toolbar ---------- */}
+      <nav className="tvLeft">
+        {TOOLS.map((t) => (
+          <button key={t.id} className={`ltool ${tool === t.id ? 'on' : ''}`} title={`${t.label} (${t.key})`} onClick={() => setTool(t.id)}><Icon d={t.icon} /></button>
+        ))}
+        <div className="lsep" />
+        <button className="ltool" title="Delete selected drawing (Del)" disabled={!selected}
+          onClick={() => { setDrawingsState((ds) => ds.filter((d) => d.id !== selected)); setSelected(null); }}>
+          <Icon d="M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3" />
+        </button>
+        <button className="ltool" title="Remove all drawings" disabled={!drawings.length}
+          onClick={() => { setDrawingsState([]); setSelected(null); }}>
+          <Icon d="M6 6l12 12M18 6L6 18" />
+        </button>
+      </nav>
 
-      <div className="side">
+      {/* ---------- Chart + floating replay bar ---------- */}
+      <main className="tvChart">
+        <ChartPane rep={rep} version={version} tf={tf} cfg={cfg} hist={hist} historyLoading={histLoading}
+          tool={tool} setTool={setTool} drawings={drawings} setDrawings={setDrawings} selected={selected} setSelected={setSelected}>
+          <div className="replayBar">
+            <button className="rbtn" onClick={() => rep.restart()} title="Restart chart (R)">↺</button>
+            <button className="rbtn play" onClick={() => rep.togglePlay()} title="Play / pause (Space)" disabled={rep.done}>{rep.playing ? '❚❚' : '▶'}</button>
+            <button className="rbtn" onClick={() => rep.stepBar(tf)} title="Forward one candle (→)" disabled={rep.done}>▶|</button>
+            <button className="rbtn" onClick={() => rep.stepMinute()} title="Forward one minute (Shift+→)" disabled={rep.done}>+1m</button>
+            <select className="rsel" value={rep.speed} onChange={(e) => rep.setSpeed(Number(e.target.value))} title="Replay speed">
+              {SPEEDS.map((s) => <option key={s} value={s}>{s}× ({s} min/s)</option>)}
+            </select>
+            <span className="rclock mono">{hhmm(rep.cur)}</span>
+            <span className="muted small">{rep.done ? 'done' : `${rep.endIdx - rep.cur} min left`}</span>
+          </div>
+        </ChartPane>
+      </main>
+
+      {/* ---------- Right panel ---------- */}
+      <aside className="tvRight">
+        {rep.pos ? <PositionCard rep={rep} onOrder={onOrder} /> : !rep.done && <OrderTicket rep={rep} onOrder={onOrder} />}
+
         {rep.ev && rep.def && (
-          <div className="box">
-            <h4>Rule: only take it if…</h4>
+          <details className="box" open>
+            <summary><h4>Rule: only take it if…</h4></summary>
             <div className="ruleText" dangerouslySetInnerHTML={{ __html: rep.def.rule(settings) }} />
             <div className="muted small" style={{ marginTop: 6 }}>Some charts have no valid setup. Graded on the decision, not the P&amp;L.</div>
-          </div>
-        )}
-
-        <div className="box">
-          <h4>Replay</h4>
-          <div className="play">
-            <button onClick={() => rep.stepBar(tf)} title="Next candle on this timeframe (→)">Step ▸</button>
-            <button onClick={() => rep.stepMinute()} title="One minute (Shift+→)">+1m</button>
-            <button className={rep.playing ? 'on' : ''} onClick={() => rep.togglePlay()} title="Play/Pause (Space)">{rep.playing ? 'Pause' : 'Play'}</button>
-          </div>
-          <div className="chips" style={{ marginTop: 8 }}>
-            {SPEEDS.map((s) => <button key={s} className={`chip ${rep.speed === s ? 'on' : ''}`} onClick={() => rep.setSpeed(s)}>{s} min/s</button>)}
-          </div>
-          <button className="wide" onClick={() => rep.restart()} title="Start this chart over (R)">↺ Restart chart</button>
-        </div>
-
-        {!p && (
-          <div className="box">
-            <h4>Order</h4>
-            <div className="kv"><span className="muted">Last</span><span className="mono">{lp.toFixed(2)}</span></div>
-            <div className="kv"><span className="muted">Rel. volume (last 1m)</span><span className={`mono ${rv >= 1.5 ? 'up' : ''}`}>{rv.toFixed(1)}×</span></div>
-            <div className="kv"><span className="muted">Stop</span><span className="mono">{rep.stopPx != null ? rep.stopPx.toFixed(2) : 'click chart'}</span></div>
-            <div className="chips" style={{ margin: '6px 0' }}>
-              {chips.map(([n, v]) => <button key={n} className="chip" onClick={() => say(rep.setStop(v))}>{n}</button>)}
-            </div>
-            <div className="kv"><span className="muted">Target</span><span className="chips">
-              {[0, 1, 2, 3].map((r) => <button key={r} className={`chip ${rep.tgtR === r ? 'on' : ''}`} onClick={() => rep.setTargetR(r)}>{r ? `${r}R` : 'None'}</button>)}
-            </span></div>
-            <div className="trade">
-              <button className="buy" disabled={rep.done || (rep.stopPx != null && rep.stopPx >= lp)} onClick={() => say(rep.enter(1))}>Buy <span className="k">B</span></button>
-              <button className="sell" disabled={rep.done || (rep.stopPx != null && rep.stopPx <= lp)} onClick={() => say(rep.enter(-1))}>Short <span className="k">S</span></button>
-            </div>
-          </div>
-        )}
-
-        {p && (
-          <div className="box">
-            <h4>Position</h4>
-            <div className={`bigR mono ${cls(posR)}`}>{fmtR(posR)}</div>
-            <div className="kv"><span className="muted">Side</span><span>{p.side > 0 ? 'Long' : 'Short'}</span></div>
-            <div className="kv"><span className="muted">Entry</span><span className="mono">{p.entry.toFixed(2)}</span></div>
-            <div className="kv"><span className="muted">Stop</span><span className="mono">{p.stop.toFixed(2)}</span></div>
-            <div className="kv"><span className="muted">Target</span><span className="mono">{p.target ? p.target.toFixed(2) : '–'}</span></div>
-            <div className="muted small" style={{ marginTop: 4 }}>Click chart to move stop.</div>
-            <button className="wide" onClick={() => rep.flatten()}>Flatten <kbd>F</kbd></button>
-          </div>
+          </details>
         )}
 
         <div className="box">
           <h4>This rep</h4>
           <div className="kv"><span className="muted">Trades</span><span className="mono">{rep.trades.length}</span></div>
-          <div className="kv"><span className="muted">Net</span><span className={`mono ${cls(rep.netR)}`}>{fmtR(rep.netR)}</span></div>
-          <div className="kv"><span className="muted">Time left</span><span className="mono">{rep.done ? 'done' : `${rep.endIdx - rep.cur} min`}</span></div>
+          <div className="kv"><span className="muted">Net</span><span className={`mono ${cls(rep.realized)}`}>{usd(rep.realized, true)} · {fmtR(rep.netR)}</span></div>
         </div>
-        {!rep.done
-          ? <button className="endbtn" onClick={() => rep.end()} title="Done trading: grade this rep">I'm done: grade it <kbd>E</kbd></button>
-          : sheetHidden && <button className="endbtn" onClick={() => setSheetHidden(false)}>Show grade</button>}
-        <div className="keys">
-          <kbd>→</kbd> step candle · <kbd>⇧→</kbd> 1 min · <kbd>Space</kbd> play · <kbd>1</kbd>–<kbd>6</kbd> timeframe · <kbd>B</kbd>/<kbd>S</kbd> buy/short · <kbd>F</kbd> flatten · <kbd>R</kbd> restart · <kbd>I</kbd> indicators · <kbd>N</kbd> next rep
-        </div>
-      </div>
+        <details className="keys">
+          <summary>Keyboard shortcuts</summary>
+          <kbd>→</kbd> next candle · <kbd>⇧→</kbd> 1 min · <kbd>Space</kbd> play · <kbd>1</kbd>–<kbd>6</kbd> timeframe · <kbd>B</kbd>/<kbd>S</kbd> buy/short · <kbd>F</kbd> close · <kbd>R</kbd> restart · <kbd>I</kbd> indicators · <kbd>Alt+T</kbd> trend line · <kbd>Alt+H</kbd> horizontal line · <kbd>Del</kbd> delete drawing · <kbd>E</kbd> grade · <kbd>N</kbd> next rep
+        </details>
+      </aside>
+
+      {/* ---------- Bottom account panel ---------- */}
+      <AccountPanel rep={rep} open={bottomOpen} setOpen={setBottom} />
 
       {res && !sheetHidden && (
         <div id="result">
@@ -155,7 +179,7 @@ export function Session({ rep, onHome, onNext }: Props) {
               <div className="score mono">{res.score ?? '–'}</div>
               <div>
                 <div className={`verdict ${res.correct == null ? '' : res.correct ? 'up' : 'down'}`}>
-                  {res.grade}{!rep.ev && <> · <span className={`${cls(res.netR)} mono`}>{fmtR(res.netR)}</span></>}
+                  {res.grade} · <span className={`${cls(res.netUsd)} mono`}>{usd(res.netUsd, true)} ({fmtR(res.netR)})</span>
                 </div>
                 <div className="grade">{rep.day.sym} · {rep.day.date} · {rep.trades.length} trade{rep.trades.length === 1 ? '' : 's'}</div>
               </div>
@@ -169,6 +193,12 @@ export function Session({ rep, onHome, onNext }: Props) {
               </div>
             )}
             <ul className="feedback">{res.notes.map((n, i) => <li key={i} dangerouslySetInnerHTML={{ __html: n }} />)}</ul>
+            {rep.journalId && (
+              <div className="sheetReview">
+                <h4>Review <span className="muted small">saved to your journal</span></h4>
+                <ReviewBox entryId={rep.journalId} compact />
+              </div>
+            )}
             <div className="resActions">
               <button className="ghost" onClick={onHome}>Setups</button>
               <button className="ghost" onClick={() => setSheetHidden(true)}>Look at chart</button>

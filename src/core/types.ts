@@ -58,6 +58,9 @@ export interface Trade {
   entryIdx: number;
   exitIdx: number;
   reason: string;
+  qty: number;
+  /** Dollar P&L (qty × price move). */
+  pnl: number;
 }
 
 /** Background data sync status, served by the dev server at /api/status. */

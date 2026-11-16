@@ -9,6 +9,7 @@ export const orb: SetupDef = {
   id: 'orb',
   group: 'Price action',
   label: 'Opening Range Breakout',
+  preset: { or: true },
   blurb: 'Take it only if it qualifies. Some charts have no valid setup.',
   rule: (o) => `A 1-min candle <b>closes</b> outside the first ${o.orMin}-min range on <b>≥${RV_MIN}× volume</b> (vs prior 10 bars), within ${WINDOW_MIN} min. Enter within 3 bars, in the break's direction. Stop: beyond the breakout candle, no wider than the other side of the range.`,
   evaluate(day, { orMin }) {

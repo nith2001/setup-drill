@@ -27,18 +27,35 @@ Keys stay on the server side; the browser never talks to Alpaca. Alpaca's free t
 | `npm run typecheck` | TypeScript check |
 | `npm run build` | Typecheck + production build to `dist/` |
 
+## The app
+Three tabs:
+- **Practice**: pick a setup drill or free play. Shows today's reps, P&L and your streak.
+- **Journal**: your trade diary. Every finished rep is saved with its trades (entry, exit, stop, ticks, $ P&L, R), the grade, and your notes and tags. See net P&L, win rate, average win/loss, profit factor, right-call rate, an equity curve, a per-setup breakdown and your most-used tags. Filter by 7 / 30 days or by setup; export CSV (one row per trade) or JSON.
+- **Settings**: blind mode, opening range, free play length, account size, risk per trade, take-profit R, how live P&L is shown (ticks / $ / R), market data status.
+
+**Where the journal lives:** `journal/journal.json` in this folder, a plain JSON file written by the dev server (gitignored, never committed). Back it up like any file. If the dev server isn't reachable, entries are kept in the browser until it is. History saved by older versions of the app is imported into the file automatically.
+
+After each rep, tag it (Followed plan, Chased, FOMO, Moved stop…) and jot a note right on the grade sheet.
+
+## The screen
+Laid out like TradingView: timeframes and indicators across the top, drawing tools on the left, a replay bar floating over the chart, the order panel on the right, and positions / trade history / account balance along the bottom.
+
+**Placing a trade.** Pick Buy or Sell in the order panel. A stop and take-profit are drawn on the chart right away (dashed preview with red/green zones). Drag either line, type a price, or use the chips (OR low, 5-bar low). Set your risk in **$** or **% of balance** and a reward:risk (1R–3R); the share count is worked out for you, capped at 4× buying power. Click the blue/red button (or press `B`/`S`) to send a market order. While in the trade you can keep dragging SL/TP, move the stop to breakeven, remove the TP, or close.
+
+Account starts at **$50,000** each rep. Order settings (risk, R:R) are remembered.
+
 ## Controls
 | Key | Action |
 |---|---|
-| `→` / `Shift+→` | Step one candle of the current timeframe / one minute |
+| `→` / `Shift+→` | Next candle on the current timeframe / one minute |
 | `Space` | Play / pause (speed 1–60 min of market time per second) |
 | `1`–`6` | Timeframe: 1m, 5m, 15m, 1h, 4h, 1D |
 | `I` | Indicators: any number of EMAs/SMAs (any length), VWAP, volume, RSI, MACD |
-| click chart | Set your stop (or move it while in a trade) |
-| `B` / `S` | Buy / short at market |
-| `F` | Flatten |
+| `Alt+T` / `Alt+H` | Trend line / horizontal line (click to place; drag to move; `Del` deletes; `Esc` cancels) |
+| `B` / `S` | Buy / sell short at market with the current ticket |
+| `F` | Close position |
 | `R` | Restart the chart from the beginning |
-| `E` / `N` | End and grade the rep / next rep |
+| `E` / `N` | Finish and grade the rep / next rep |
 
 Higher timeframes show the weeks and months before the rep day. On real data the dev server fetches them from Alpaca the first time you open that day (cached in `data/history/`). With **Blind** on, the axis shows days relative to the rep day (D-3, Today) instead of dates.
 

@@ -104,7 +104,8 @@ const inflight = new Map<string, Promise<string>>();
 /** Cached history file for sym/date, fetching it from Alpaca the first time. Resolves to the file path. */
 function historyFile(o: SyncOptions, sym: string, date: string): Promise<string> {
   const file = path.join(path.dirname(o.file), 'history', sym, `${date}.json`);
-  if (fs.existsSync(file)) return Promise.resolve(file);
+  // Reuse the cache unless it predates 1-min history (no "m1" key).
+  if (fs.existsSync(file)) { try { if ('m1' in JSON.parse(fs.readFileSync(file, 'utf8'))) return Promise.resolve(file); } catch { /* refetch */ } }
   const k = `${sym}/${date}`;
   if (!inflight.has(k)) {
     inflight.set(k, fetchHistory(createClient(o.key!, o.secret!), sym, date)

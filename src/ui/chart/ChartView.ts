@@ -6,7 +6,7 @@ import {
 import type { Candle } from '../../core/candles';
 import { computeOverlays, maLabel, type IndicatorConfig } from '../../core/overlays';
 
-export const COLORS = { up: '#26a69a', down: '#ef5350', accent: '#f0b429', blue: '#58a6ff', text: '#c9d1d9', grey: '#6e7681', purple: '#c792ea' };
+export const COLORS = { up: '#089981', down: '#f23645', accent: '#f0b429', blue: '#58a6ff', text: '#c9d1d9', grey: '#6e7681', purple: '#c792ea' };
 
 export interface LineSpec { key: string; price: number; color: string; title: string; style?: LineStyle }
 export interface Hover { open: number; high: number; low: number; close: number; volume: number; prevClose: number | null }
@@ -27,19 +27,28 @@ export class ChartView {
   private last: Candle[] = [];
   private intraday = true;
   private blind = false;
+  private extraPrices: number[] = [];
   /** date -> trading days relative to the rep day (0 = today), for blind axis labels */
   private dayOffset = new Map<string, number>();
 
   constructor(el: HTMLElement) {
     this.chart = createChart(el, {
       autoSize: true,
-      layout: { background: { color: '#0d1117' }, textColor: '#8b97a5', panes: { separatorColor: '#2a3440' } },
-      grid: { vertLines: { color: '#161d26' }, horzLines: { color: '#161d26' } },
+      layout: { background: { color: '#131722' }, textColor: '#b2b5be', fontSize: 12, panes: { separatorColor: '#2a2e39' } },
+      grid: { vertLines: { color: '#1f2330' }, horzLines: { color: '#1f2330' } },
       timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 12, barSpacing: 7, borderColor: '#2a3440' },
       rightPriceScale: { borderColor: '#2a3440' },
-      crosshair: { mode: CrosshairMode.Normal },
+      crosshair: { mode: CrosshairMode.Normal, vertLine: { color: '#9598a1', labelBackgroundColor: '#363a45' }, horzLine: { color: '#9598a1', labelBackgroundColor: '#363a45' } },
     });
-    this.candle = this.chart.addSeries(CandlestickSeries, { upColor: COLORS.up, downColor: COLORS.down, borderVisible: false, wickUpColor: COLORS.up, wickDownColor: COLORS.down });
+    this.candle = this.chart.addSeries(CandlestickSeries, {
+      upColor: COLORS.up, downColor: COLORS.down, borderVisible: false, wickUpColor: COLORS.up, wickDownColor: COLORS.down,
+      // Keep the order bracket (entry / SL / TP) in view like TradingView does.
+      autoscaleInfoProvider: (orig: () => { priceRange: { minValue: number; maxValue: number } } | null) => {
+        const r = orig();
+        if (!r || !this.extraPrices.length) return r;
+        return { ...r, priceRange: { minValue: Math.min(r.priceRange.minValue, ...this.extraPrices), maxValue: Math.max(r.priceRange.maxValue, ...this.extraPrices) } };
+      },
+    });
     this.vol = this.chart.addSeries(HistogramSeries, { priceScaleId: 'vol', priceFormat: { type: 'volume' }, lastValueVisible: false, priceLineVisible: false });
     this.chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
     this.markers = createSeriesMarkers(this.candle, []);
@@ -68,6 +77,54 @@ export class ChartView {
   }
 
   destroy() { this.chart.remove(); }
+
+  /** Prices that autoscale must include (order bracket). */
+  setExtraPrices(ps: number[]) {
+    const next = ps.filter((p) => isFinite(p));
+    if (next.join() === this.extraPrices.join()) return;
+    this.extraPrices = next;
+    this.candle.applyOptions({}); // re-run autoscale
+  }
+
+  // ---------- Coordinates (for the drawing / order overlay) ----------
+  priceToY(p: number): number | null { return this.candle.priceToCoordinate(p); }
+  yToPrice(y: number): number | null { return this.candle.coordinateToPrice(y); }
+  /** Main price pane size and right price-axis width, in CSS px. */
+  paneRect() {
+    const panes = this.chart.panes();
+    return { width: this.chart.timeScale().width(), height: panes[0]?.getHeight() ?? 0, axis: this.chart.priceScale('right').width() };
+  }
+  private barSeconds() {
+    const n = this.last.length;
+    return n > 1 ? Math.max(60, this.last[n - 1].time - this.last[n - 2].time) : 60;
+  }
+  /** x for any time, interpolating between candles and extrapolating past the last one. */
+  timeToX(t: number): number | null {
+    const cs = this.last, n = cs.length;
+    if (!n) return null;
+    let logical: number;
+    if (t >= cs[n - 1].time) logical = n - 1 + (t - cs[n - 1].time) / this.barSeconds();
+    else if (t <= cs[0].time) logical = (t - cs[0].time) / this.barSeconds();
+    else {
+      let lo = 0, hi = n - 1;
+      while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (cs[mid].time <= t) lo = mid; else hi = mid; }
+      logical = lo + (t - cs[lo].time) / (cs[hi].time - cs[lo].time);
+    }
+    return this.chart.timeScale().logicalToCoordinate(logical as never);
+  }
+  xToTime(x: number): number | null {
+    const cs = this.last, n = cs.length;
+    const l = this.chart.timeScale().coordinateToLogical(x) as number | null;
+    if (l == null || !n) return null;
+    if (l >= n - 1) return cs[n - 1].time + (l - (n - 1)) * this.barSeconds();
+    if (l <= 0) return cs[0].time + l * this.barSeconds();
+    const i = Math.floor(l);
+    return cs[i].time + (l - i) * (cs[i + 1].time - cs[i].time);
+  }
+  /** x of the candle containing the rep's current bar (last candle). */
+  lastX(): number | null { const n = this.last.length; return n ? this.chart.timeScale().logicalToCoordinate((n - 1) as never) : null; }
+  /** Turn chart panning/zooming off while dragging something on the overlay. */
+  setInteractive(on: boolean) { this.chart.applyOptions({ handleScroll: on, handleScale: on }); }
 
   onClick(cb: (price: number) => void) {
     this.chart.subscribeClick((p) => { if (!p.point) return; const px = this.candle.coordinateToPrice(p.point.y); if (px != null) cb(px); });

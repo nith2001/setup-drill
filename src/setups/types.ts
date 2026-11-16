@@ -17,7 +17,7 @@ export interface SetupDef {
   rule: (o: SetupOpts) => string;
   /** null = the day lacks the context for this drill; otherwise valid or no-trade. */
   evaluate: (day: Day, o: SetupOpts) => Eval | null;
-  /** Indicator drills: indicators switched on when the rep starts (on top of the user's own). Also hides opening-range lines. */
+  /** Indicators switched on when the rep starts (on top of the user's own). */
   preset?: Preset;
 }
 

@@ -13,8 +13,11 @@ export interface Candle { time: number; open: number; high: number; low: number;
 export interface SessionBars { date: string; o: number[]; h: number[]; l: number[]; c: number[]; v: number[] }
 
 /** Context before the rep day (strictly earlier dates). */
-export interface History { daily: Candle[]; m5: SessionBars[] }
-export const EMPTY_HISTORY: History = { daily: [], m5: [] };
+/** Earlier sessions: daily bars, 5-min bars (~40 sessions), 1-min bars (last M1_DAYS sessions; absent in old caches). */
+export interface History { daily: Candle[]; m5: SessionBars[]; m1?: SessionBars[] }
+export const EMPTY_HISTORY: History = { daily: [], m5: [], m1: [] };
+/** Earlier sessions shown on the 1-minute chart. */
+export const M1_DAYS = 2;
 
 /** Group a session's bars (each `stepMin` long) into `tfMin` candles, using bars 0..upto. */
 function bucketize(s: SessionBars, stepMin: number, tfMin: number, upto = s.c.length - 1): Candle[] {
@@ -31,10 +34,9 @@ function bucketize(s: SessionBars, stepMin: number, tfMin: number, upto = s.c.le
 /** Candles for the chart at timeframe `tf`, with the rep day revealed up to 1-min bar `upto`. */
 export function buildCandles(tf: TF, hist: History, day: Day, upto: number, priorCache?: Map<TF, Candle[]>): Candle[] {
   const today = bucketize(day, 1, tf === 'D' ? 390 : tf, upto);
-  if (tf === 1) return today;
   let prior = priorCache?.get(tf);
   if (!prior) {
-    prior = tf === 'D' ? hist.daily : hist.m5.flatMap((s) => bucketize(s, 5, tf));
+    prior = tf === 'D' ? hist.daily : tf === 1 ? (hist.m1 ?? []).flatMap((s) => bucketize(s, 1, 1)) : hist.m5.flatMap((s) => bucketize(s, 5, tf));
     priorCache?.set(tf, prior);
   }
   return prior.concat(today);
@@ -58,5 +60,6 @@ export function historyFromDays(days: Day[], sym: string, date: string, m5Days =
     const cs = bucketize(d, 1, 5);
     return { date: d.date, o: cs.map((c) => c.open), h: cs.map((c) => c.high), l: cs.map((c) => c.low), c: cs.map((c) => c.close), v: cs.map((c) => c.volume) };
   });
-  return { daily, m5 };
+  const m1 = prior.slice(-M1_DAYS).map((d) => ({ date: d.date, o: d.o, h: d.h, l: d.l, c: d.c, v: d.v }));
+  return { daily, m5, m1 };
 }
