@@ -125,3 +125,7 @@ tests/       Vitest unit tests
 3. `npm test`: every registered setup is automatically checked to produce both valid and no-trade charts on demo data.
 
 Charts are TradingView Lightweight Charts (Apache 2.0). The TradingView logo on the chart is the required attribution.
+
+## License
+
+MIT. See [LICENSE](LICENSE). Market data you sync with your own Alpaca key is not covered and stays out of the repo.

@@ -1,6 +1,7 @@
 {
   "name": "setup-drill",
   "version": "1.0.0",
+  "license": "MIT",
   "description": "Practice day-trading setups on replayed 1-minute charts",
   "scripts": {
     "dev": "vite",
