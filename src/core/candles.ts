@@ -31,9 +31,22 @@ function bucketize(s: SessionBars, stepMin: number, tfMin: number, upto = s.c.le
   return out;
 }
 
-/** Candles for the chart at timeframe `tf`, with the rep day revealed up to 1-min bar `upto`. */
-export function buildCandles(tf: TF, hist: History, day: Day, upto: number, priorCache?: Map<TF, Candle[]>): Candle[] {
-  const today = bucketize(day, 1, tf === 'D' ? 390 : tf, upto);
+/** A 1-min bar that is still forming (real-time replay). */
+export interface FormingBar { idx: number; o: number; h: number; l: number; c: number; v: number }
+
+/**
+ * Candles for the chart at timeframe `tf`, with the rep day revealed up to 1-min bar `upto`,
+ * plus the bar still forming (if any), merged into its candle so it grows tick by tick.
+ */
+export function buildCandles(tf: TF, hist: History, day: Day, upto: number, priorCache?: Map<TF, Candle[]>, forming?: FormingBar | null): Candle[] {
+  const step = tf === 'D' ? 390 : tf;
+  const today = bucketize(day, 1, step, upto);
+  if (forming && forming.idx === upto + 1) {
+    const last = today[today.length - 1], t = dayStartTs(day.date) + Math.floor(forming.idx / step) * step * 60;
+    if (last && last.time === t) {
+      today[today.length - 1] = { ...last, high: Math.max(last.high, forming.h), low: Math.min(last.low, forming.l), close: forming.c, volume: last.volume + forming.v };
+    } else today.push({ time: t, open: forming.o, high: forming.h, low: forming.l, close: forming.c, volume: forming.v, date: day.date });
+  }
   let prior = priorCache?.get(tf);
   if (!prior) {
     prior = tf === 'D' ? hist.daily : tf === 1 ? (hist.m1 ?? []).flatMap((s) => bucketize(s, 1, 1)) : hist.m5.flatMap((s) => bucketize(s, 5, tf));

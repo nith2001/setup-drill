@@ -1,6 +1,8 @@
 // One rep: replay clock, orders, fills and grading. No DOM; the UI subscribes to changes.
+import { idealTrade } from '../core/ideal';
 import { nextBarEnd, type TF } from '../core/candles';
-import { evalBar, slippage } from '../core/fills';
+import { slippage } from '../core/fills';
+import { minutePath, partialBar, TICKS } from '../core/path';
 import { gradeDecision, scoreRep, type Parts } from '../core/grading';
 import { r2 } from '../core/math';
 import type { Day, Eval, Side, Trade } from '../core/types';
@@ -9,7 +11,11 @@ import type { SetupDef } from '../setups';
 export interface OpenPos {
   side: Side; qty: number; entry: number; stop: number; stop0: number; target: number | null;
   risk: number; // per share at entry
+  /** Shares in one contract (the size that risks one R at entry). qty / unitQty = contracts. */
+  unitQty: number;
   mfe: number; mae: number; entryIdx: number;
+  /** The bar the fill happened in (the forming bar when entered mid-candle). For display. */
+  entryBar: number;
 }
 
 /** Order-ticket settings (persisted by the UI). */
@@ -21,8 +27,15 @@ export interface OrderSettings {
   tpOn: boolean;
   /** How live P&L is displayed while in a trade (UI only). */
   pnlView: 'ticks' | 'usd' | 'r';
+  /** Size in contracts: one contract risks `risk` at the stop (1R). Starts at 1 every rep. */
+  contracts: number;
 }
-export const DEFAULT_ORDER: OrderSettings = { account: 50000, riskMode: 'usd', risk: 250, rr: 2, tpOn: true, pnlView: 'ticks' };
+export const DEFAULT_ORDER: OrderSettings = { account: 50000, riskMode: 'usd', risk: 250, rr: 2, tpOn: true, pnlView: 'ticks', contracts: 1 };
+/** Most contracts per trade. */
+export const MAX_CONTRACTS = 10;
+
+/** Price move per share that equals 1R for a position (1R = one contract's risk at entry). */
+export const rPerShare = (p: { risk: number; qty: number; unitQty: number }) => (p.risk * p.unitQty) / p.qty;
 
 /** Minimum distance of the automatic (undragged) stop, as a fraction of price. */
 export const AUTO_STOP_MIN = 0.0015;
@@ -33,6 +46,8 @@ export const BUYING_POWER = 4;
 /** What the order ticket would send right now. */
 export interface Plan {
   side: Side; entry: number; stop: number; target: number | null; qty: number;
+  /** Shares in one contract (risks one R); qty = unitQty × contracts unless buying power caps it. */
+  unitQty: number;
   riskUsd: number; rewardUsd: number | null; bpUsed: number; error: string | null;
 }
 
@@ -41,10 +56,17 @@ export interface RepResult {
   parts?: Parts; notes: string[]; netR: number; netUsd: number;
 }
 
-export interface RepInit { setup: string; def: SetupDef | null; day: Day; ev: Eval | null; startIdx: number; endIdx: number; orMin: number; order?: OrderSettings }
+export interface RepInit { setup: string; def: SetupDef | null; day: Day; ev: Eval | null; startIdx: number; endIdx: number; orMin: number; order?: OrderSettings;
+  /** Study mode: a valid chart shown fully played out with the ideal trade; no trading, no grade. */
+  example?: boolean;
+  /** Candle size (minutes) the trader works on; the default stop uses the last 5 such candles. */
+  barMin?: number;
+  /** Guided tutorial: like an example (no trading) but starts at the beginning and plays forward. */
+  tutorial?: boolean }
 
-/** Replay speeds in minutes of market time per second. */
-export const SPEEDS = [1, 2, 5, 10, 30, 60];
+/** Replay speeds as multiples of real time: 1 = a 1-min candle takes a real minute to form. */
+export const SPEEDS = [1, 2, 5, 10, 30, 60, 300];
+export const speedLabel = (s: number) => (s === 1 ? '1× real time' : `${s}×`);
 
 let nextId = 1;
 
@@ -57,6 +79,13 @@ export class Replay {
   readonly startIdx: number;
   readonly endIdx: number;
   private readonly orMin: number;
+  readonly example: boolean;
+  readonly tutorial: boolean;
+  readonly barMin: number;
+  /** Playback stops when it reaches this 1-min bar (tutorial steps). */
+  pauseAt: number | null = null;
+  /** Drop to real-time speed when a trade is opened (so trades are managed live). */
+  autoSlow = true;
 
   order: OrderSettings;
   cur = 0;
@@ -66,7 +95,12 @@ export class Replay {
   orderSide: Side = 1;
   stopPx: number | null = null;
   tgtPx: number | null = null;
-  speed = 2;
+  speed = 1;
+  /**
+   * Progress through the forming 1-min bar cur+1, in ticks (0 = its open … TICKS = its close).
+   * -1 = no bar forming (between minutes). Price moves along a simulated path inside each bar.
+   */
+  sub = -1;
   playing = false;
   done = false;
   result: RepResult | null = null;
@@ -74,10 +108,15 @@ export class Replay {
   version = 0;
   /** 1 on first run of this chart; +1 on each restart. */
   attempt = 1;
-  /** Journal entry id of the last finished run (set by the app). */
+  /** Bumps on every Restart (the chart re-frames only then). */
+  restarts = 0;
+  /** Journal entry id of this run, if it was saved (set by the app). */
   journalId: string | null = null;
+  /** The first finished run of this chart was saved; restarts are practice and aren't journaled. */
+  journaled = false;
 
   private timer: ReturnType<typeof setInterval> | null = null;
+  private paths = new Map<number, number[]>();
   private listeners = new Set<() => void>();
   /** Called once when the rep ends (for history / stats). */
   onEnd?: (r: Replay) => void;
@@ -87,13 +126,35 @@ export class Replay {
     this.startIdx = init.startIdx; this.endIdx = init.endIdx; this.orMin = init.orMin;
     this.order = { ...DEFAULT_ORDER, ...init.order };
     this.cur = init.startIdx - 1;
+    this.tutorial = !!init.tutorial;
+    this.example = !!init.example || this.tutorial;
+    this.barMin = init.barMin ?? 1;
+    if (this.example && !this.tutorial) { this.cur = this.endIdx; this.done = true; }
   }
+
+  /** The textbook trade for a valid setup: enter on the trigger close, stop at the rule's structural stop, 2R target. */
+  get ideal() { return this.ev?.valid ? idealTrade(this.day, this.ev) : null; }
 
   subscribe = (fn: () => void) => { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; };
   getVersion = () => this.version;
   private emit() { this.version++; for (const fn of this.listeners) fn(); }
 
-  get last() { return this.day.c[this.cur]; }
+  /** Simulated tick path of 1-min bar i (cached). */
+  path(i: number) {
+    let p = this.paths.get(i);
+    if (!p) { p = minutePath(this.day, i); this.paths.set(i, p); }
+    return p;
+  }
+  /** The bar currently forming (cur+1) as OHLCV so far, or null between minutes. */
+  get forming() { return this.sub >= 0 ? { idx: this.cur + 1, ...partialBar(this.day, this.cur + 1, this.path(this.cur + 1), this.sub) } : null; }
+  /** Where the rep stops: the setup window's end, or, while a trade is still open, the market close. */
+  get lastIdx() { return this.pos && this.cur >= this.endIdx ? this.day.c.length - 1 : this.endIdx; }
+  /** True while the rep has run past its window to let an open trade finish. */
+  get overtime() { return !this.done && this.cur >= this.endIdx && !!this.pos; }
+  /** Market clock: seconds into the forming minute (0 between minutes). */
+  get seconds() { return this.sub >= 0 ? Math.floor((this.sub / TICKS) * 60) : 0; }
+  /** Last traded price: the current tick inside a forming bar, else the last close. */
+  get last() { return this.sub >= 0 ? this.path(this.cur + 1)[this.sub] : this.day.c[this.cur]; }
   get netR() { return this.trades.reduce((a, t) => a + t.R, 0); }
   get realized() { return this.trades.reduce((a, t) => a + t.pnl, 0); }
   get openPnl() { return this.pos ? this.pos.side * (this.last - this.pos.entry) * this.pos.qty : 0; }
@@ -107,32 +168,64 @@ export class Replay {
     for (let i = 0; i < this.orMin; i++) { hi = Math.max(hi, this.day.h[i]); lo = Math.min(lo, this.day.l[i]); }
     return { hi, lo, minutes: this.orMin };
   }
-  /** Lowest low / highest high of the last 5 one-minute bars. */
+  /** Lowest low / highest high of the last 5 candles (of `barMin` minutes). */
   get fiveBar() {
     let lo = Infinity, hi = -Infinity;
-    for (let i = Math.max(0, this.cur - 4); i <= this.cur; i++) { lo = Math.min(lo, this.day.l[i]); hi = Math.max(hi, this.day.h[i]); }
+    for (let i = Math.max(0, this.cur - 5 * this.barMin + 1); i <= this.cur; i++) { lo = Math.min(lo, this.day.l[i]); hi = Math.max(hi, this.day.h[i]); }
     return { lo: r2(lo - 0.01), hi: r2(hi + 0.01) };
   }
 
   // ---------- Clock ----------
-  /** Advance to 1-min bar `target` (clamped), filling stops/targets minute by minute. */
+  /**
+   * Move the market forward `n` ticks along the simulated path, filling stops/targets on each tick.
+   * Stops early at the end of the rep or at `pauseAt`. Returns false once it can't go further.
+   */
+  private stepTicks(n: number): boolean {
+    for (let s = 0; s < n; s++) {
+      if (this.done) return false;
+      if (this.sub < 0) {
+        if (this.cur >= this.lastIdx) { this.end(); return false; }
+        this.sub = 0; // the next bar opens
+      } else this.sub++;
+      const i = this.cur + 1;
+      this.checkTick(i, this.sub);
+      if (this.sub >= TICKS) {
+        this.cur = i; this.sub = -1; // bar complete
+        // Past the window, an open trade keeps the rep going until it's stopped, hits its target, or the day ends.
+        if (this.cur >= this.lastIdx) { this.end(); return false; }
+        if (this.pauseAt != null && this.cur >= this.pauseAt) { this.pauseAt = null; this.pause(); return false; }
+      }
+    }
+    return true;
+  }
+
+  /** Jump to the close of 1-min bar `target` (clamped), playing every tick in between for fills. */
   advanceTo(target: number) {
     if (this.done) return;
-    const to = Math.min(target, this.endIdx);
-    while (this.cur < to) { this.cur++; this.checkFill(); }
-    if (this.cur >= this.endIdx) this.end();
-    else this.emit();
+    if (!this.pos && this.cur >= this.endIdx) { this.end(); return; } // flat again after running past the window
+    const to = Math.min(target, this.pos ? this.day.c.length - 1 : this.endIdx);
+    while (this.cur < to && this.stepTicks(TICKS + 1 - Math.max(0, this.sub + 1))) { /* bar by bar */ }
+    this.emit();
   }
   /** Step one candle of the chart's timeframe. */
-  stepBar(tf: TF) { this.advanceTo(nextBarEnd(this.cur, tf, this.endIdx)); }
+  stepBar(tf: TF) { this.advanceTo(nextBarEnd(this.cur, tf, this.pos ? this.day.c.length - 1 : this.endIdx)); }
   stepMinute() { this.advanceTo(this.cur + 1); }
 
   play() {
     if (this.done || this.playing) return;
     this.playing = true;
-    const tps = Math.min(this.speed, 20), per = this.speed / tps; // ticks/sec, minutes/tick
-    let carry = 0;
-    this.timer = setInterval(() => { carry += per; const n = Math.floor(carry); carry -= n; if (n) this.advanceTo(this.cur + n); }, 1000 / tps);
+    // Market time runs at `speed` × real time: TICKS ticks per market minute.
+    let carry = 0, t0 = performance.now();
+    this.timer = setInterval(() => {
+      const now = performance.now(), dt = Math.min(1, (now - t0) / 1000);
+      t0 = now;
+      carry += dt * this.speed * (TICKS / 60);
+      const n = Math.floor(carry);
+      if (!n) return;
+      carry -= n;
+      this.stepTicks(n);
+      this.emit();
+    }, 50);
     this.emit();
   }
   pause() {
@@ -143,11 +236,15 @@ export class Replay {
   togglePlay() { if (this.playing) this.pause(); else this.play(); }
   setSpeed(s: number) { const was = this.playing; this.pause(); this.speed = s; if (was) this.play(); else this.emit(); }
 
+  /** Contracts for the next order, 1 to MAX_CONTRACTS. */
+  get contracts() { return Math.max(1, Math.min(MAX_CONTRACTS, Math.round(this.order.contracts || 1))); }
+
   /** Same chart from the start: clears trades and the grade. */
   restart() {
     this.pause();
     if (this.done || this.trades.length) this.attempt++;
-    this.cur = this.startIdx - 1; this.pos = null; this.trades = []; this.stopPx = null; this.tgtPx = null;
+    this.restarts++;
+    this.cur = this.startIdx - 1; this.sub = -1; this.pos = null; this.trades = []; this.stopPx = null; this.tgtPx = null;
     this.done = false; this.result = null; this.journalId = null;
     this.emit();
   }
@@ -182,15 +279,16 @@ export class Replay {
     const perShare = side * (entry - stop);
     const target = !this.order.tpOn ? null : (own ? this.tgtPx : null) ?? (perShare > 0 ? r2(entry + side * perShare * this.order.rr) : null);
     const riskBudget = this.order.riskMode === 'usd' ? this.order.risk : (this.balance * this.order.risk) / 100;
-    let error: string | null = null, qty = 0;
+    let error: string | null = null, qty = 0, unitQty = 0;
     if (perShare <= 0) error = side > 0 ? 'Stop must be below price to buy' : 'Stop must be above price to short';
     else if (perShare < entry * 0.0005) error = 'Stop is too tight';
     else {
-      qty = Math.min(Math.floor(riskBudget / perShare), Math.floor((this.balance * BUYING_POWER) / entry));
-      if (qty < 1) error = 'Risk is too small for this stop distance';
+      unitQty = Math.floor(riskBudget / perShare);
+      qty = Math.min(unitQty * this.contracts, Math.floor((this.balance * BUYING_POWER) / entry));
+      if (unitQty < 1 || qty < 1) error = 'Risk is too small for this stop distance';
     }
     return {
-      side, entry, stop, target, qty, error,
+      side, entry, stop, target, qty, unitQty, error,
       riskUsd: qty * Math.max(0, perShare),
       rewardUsd: target != null ? qty * side * (target - entry) : null,
       bpUsed: (qty * entry) / (this.balance * BUYING_POWER),
@@ -198,17 +296,15 @@ export class Replay {
   }
 
   // ---------- Orders ----------
-  private checkFill() {
+  /** Check the open position against tick k of bar i. A bar's open (k = 0) can gap through the stop or target. */
+  private checkTick(i: number, k: number) {
     const p = this.pos;
     if (!p) return;
-    const d = this.day, i = this.cur, b = { o: d.o[i], h: d.h[i], l: d.l[i], c: d.c[i] };
-    const res = evalBar(p, b);
-    const fav = p.side > 0 ? b.h - p.entry : p.entry - b.l, adv = p.side > 0 ? p.entry - b.l : b.h - p.entry;
-    if (res) {
-      if (res.reason === 'target') { p.mfe = Math.max(p.mfe, p.side * (res.price - p.entry)); p.mae = Math.max(p.mae, adv); }
-      else p.mae = Math.max(p.mae, p.side * (p.entry - res.price));
-      this.close(res.price, res.reason);
-    } else { p.mfe = Math.max(p.mfe, fav); p.mae = Math.max(p.mae, adv); }
+    const px = this.path(i)[k], gap = k === 0;
+    const move = p.side * (px - p.entry);
+    p.mfe = Math.max(p.mfe, move); p.mae = Math.max(p.mae, -move);
+    if (p.side * (px - p.stop) <= 0) this.close(gap ? px : p.stop, 'stop', i);
+    else if (p.target != null && p.side * (px - p.target) >= 0) this.close(gap ? px : p.target, 'target', i);
   }
 
   /** Planned stop (flat) or live stop (in a trade). Returns an error message or null. */
@@ -244,24 +340,40 @@ export class Replay {
 
   /** Market order using the ticket. Returns an error message or null. */
   enter(side: Side = this.orderSide): string | null {
+    if (this.example) return 'This is an example to study. Start a rep from Practice to trade it.';
     if (this.done || this.pos) return null;
     if (side !== this.orderSide) this.selectSide(side);
     const p = this.plan;
     if (p.error) { this.emit(); return p.error; }
-    this.pos = { side, qty: p.qty, entry: p.entry, stop: p.stop, stop0: p.stop, target: p.target, risk: side * (p.entry - p.stop), mfe: 0, mae: 0, entryIdx: this.cur };
+    // entryIdx = the last completed bar (grading: entering while the trigger candle is still forming is early).
+    this.pos = { side, qty: p.qty, unitQty: p.unitQty, entry: p.entry, stop: p.stop, stop0: p.stop, target: p.target, risk: side * (p.entry - p.stop), mfe: 0, mae: 0, entryIdx: this.cur,
+      entryBar: this.sub >= 0 ? this.cur + 1 : this.cur };
     this.stopPx = null; this.tgtPx = null;
+    if (this.autoSlow && this.speed > 1) this.setSpeed(1);
     this.emit();
     return null;
   }
 
-  flatten() { if (this.pos) { this.close(r2(this.last - this.pos.side * slippage(this.last)), 'manual'); this.emit(); } }
+  /** Next faster (+1) or slower (-1) speed. */
+  nudgeSpeed(d: 1 | -1) {
+    const i = SPEEDS.indexOf(this.speed), j = Math.max(0, Math.min(SPEEDS.length - 1, (i < 0 ? 0 : i) + d));
+    this.setSpeed(SPEEDS[j]);
+  }
 
-  private close(price: number, reason: string) {
-    const p = this.pos!;
+  flatten() {
+    if (!this.pos) return;
+    this.close(r2(this.last - this.pos.side * slippage(this.last)), 'manual', this.sub >= 0 ? this.cur + 1 : this.cur);
+    if (this.cur >= this.endIdx) this.end(); // past the window the rep only ran on for this trade
+    else this.emit();
+  }
+
+  private close(price: number, reason: string, at = this.cur) {
+    // R = dollars ÷ one contract's risk at entry: two contracts stopped out = −2R.
+    const p = this.pos!, r1 = rPerShare(p);
     this.trades.push({
       side: p.side, qty: p.qty, entry: p.entry, stop0: p.stop0, exit: price, pnl: p.side * (price - p.entry) * p.qty,
-      R: (p.side * (price - p.entry)) / p.risk, mfeR: p.mfe / p.risk, maeR: Math.min(p.mae / p.risk, 5),
-      entryIdx: p.entryIdx, exitIdx: this.cur, reason,
+      R: (p.side * (price - p.entry)) / r1, mfeR: p.mfe / r1, maeR: Math.min(p.mae / r1, 5),
+      entryIdx: p.entryIdx, entryBar: p.entryBar, exitIdx: at, reason,
     });
     this.pos = null; this.stopPx = null; this.tgtPx = null;
   }
@@ -271,7 +383,9 @@ export class Replay {
     if (this.done) return;
     this.pause();
     if (this.pos) this.close(this.last, 'end');
+    this.sub = -1;
     this.done = true;
+    if (this.example) { this.emit(); return; }
     this.result = this.grade();
     this.onEnd?.(this);
     this.emit();

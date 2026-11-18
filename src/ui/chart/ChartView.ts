@@ -30,6 +30,11 @@ export class ChartView {
   private extraPrices: number[] = [];
   /** date -> trading days relative to the rep day (0 = today), for blind axis labels */
   private dayOffset = new Map<string, number>();
+  /** Drag start inside the price pane, for "vertical drag turns auto-scale off" (like TradingView). */
+  private dragFrom: { x: number; y: number } | null = null;
+  private unlisten: (() => void) | null = null;
+  /** Called when auto-scale turns on or off (the UI shows an Auto button). */
+  onAutoScaleChange?: (on: boolean) => void;
 
   constructor(el: HTMLElement) {
     this.chart = createChart(el, {
@@ -56,6 +61,47 @@ export class ChartView {
       timeScale: { tickMarkFormatter: (t: number, type: TickMarkType) => this.tickLabel(t, type) },
       localization: { timeFormatter: (t: number) => this.crosshairLabel(t) },
     });
+
+    // Auto-scale locks the price axis, so a drag only scrolls sideways. Like TradingView, dragging the
+    // chart up or down turns auto-scale off so it pans freely. The chart decides on its first mouse move,
+    // so auto-scale goes off at mouse-down (capture phase, before the chart's handler) and comes back on
+    // at mouse-up if the drag stayed horizontal.
+    const down = (e: MouseEvent) => {
+      const r = el.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+      const inPane = e.button === 0 && x < this.chart.timeScale().width() && y < (this.chart.panes()[0]?.getHeight() ?? 0);
+      if (!inPane || this.chart.options().handleScroll === false) { this.dragFrom = null; return; }
+      this.dragFrom = { x: e.clientY, y: this.autoScale ? 1 : 0 }; // x = start y, y = 1 if auto was on
+      if (this.autoScale) this.chart.priceScale('right').applyOptions({ autoScale: false });
+    };
+    let maxDy = 0;
+    const move = (e: MouseEvent) => { if (this.dragFrom) maxDy = Math.max(maxDy, Math.abs(e.clientY - this.dragFrom.x)); };
+    const up = () => {
+      if (this.dragFrom?.y && maxDy < 4) this.chart.priceScale('right').applyOptions({ autoScale: true });
+      this.dragFrom = null; maxDy = 0;
+      this.syncAutoScale();
+    };
+    el.addEventListener('mousedown', down, true);
+    window.addEventListener('mousemove', move, true);
+    window.addEventListener('mouseup', up, true);
+    // Dragging or double-clicking the price axis changes auto-scale inside the library; keep the UI in sync.
+    const dbl = () => setTimeout(() => this.syncAutoScale(), 0);
+    el.addEventListener('dblclick', dbl);
+    this.unlisten = () => {
+      el.removeEventListener('mousedown', down, true); window.removeEventListener('mousemove', move, true);
+      window.removeEventListener('mouseup', up, true); el.removeEventListener('dblclick', dbl);
+    };
+  }
+
+  private lastAuto = true;
+  get autoScale() { return this.chart.priceScale('right').options().autoScale; }
+  /** Fit the price axis to the visible candles (on) or let the user pan/zoom it freely (off). */
+  setAutoScale(on: boolean) {
+    this.chart.priceScale('right').applyOptions({ autoScale: on });
+    this.syncAutoScale();
+  }
+  private syncAutoScale() {
+    const on = this.autoScale;
+    if (on !== this.lastAuto) { this.lastAuto = on; this.onAutoScaleChange?.(on); }
   }
 
   /** Blind mode: never show real dates; label days relative to the rep day. */
@@ -76,7 +122,7 @@ export class ChartView {
     return this.intraday ? `${this.dayLabel(t)} ${ChartView.hhmm(t)}` : this.dayLabel(t);
   }
 
-  destroy() { this.chart.remove(); }
+  destroy() { this.unlisten?.(); this.chart.remove(); }
 
   /** Prices that autoscale must include (order bracket). */
   setExtraPrices(ps: number[]) {
@@ -98,8 +144,11 @@ export class ChartView {
     const n = this.last.length;
     return n > 1 ? Math.max(60, this.last[n - 1].time - this.last[n - 2].time) : 60;
   }
-  /** x for any time, interpolating between candles and extrapolating past the last one. */
-  timeToX(t: number): number | null {
+  /**
+   * x for any time, interpolating between candles and extrapolating past the last one.
+   * `snap`: the centre of the candle that contains t instead of a point inside it.
+   */
+  timeToX(t: number, snap = false): number | null {
     const cs = this.last, n = cs.length;
     if (!n) return null;
     let logical: number;
@@ -108,9 +157,15 @@ export class ChartView {
     else {
       let lo = 0, hi = n - 1;
       while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (cs[mid].time <= t) lo = mid; else hi = mid; }
-      logical = lo + (t - cs[lo].time) / (cs[hi].time - cs[lo].time);
+      logical = snap ? lo : lo + (t - cs[lo].time) / (cs[hi].time - cs[lo].time);
     }
-    return this.chart.timeScale().logicalToCoordinate(logical as never);
+    if (snap) logical = Math.floor(logical);
+    // logicalToCoordinate only works on whole bar indices (it returns 0 for fractions), so interpolate.
+    const ts = this.chart.timeScale(), i = Math.floor(logical), f = logical - i;
+    const a = ts.logicalToCoordinate(i as never);
+    if (a == null || !f) return a;
+    const b = ts.logicalToCoordinate((i + 1) as never);
+    return a + f * (b != null ? b - a : ts.options().barSpacing);
   }
   xToTime(x: number): number | null {
     const cs = this.last, n = cs.length;
@@ -227,6 +282,7 @@ export class ChartView {
       this.ind.macd.s.setData(cs.map((c, i) => pt(c.time, m.signal[i])));
       this.ind.macd.h.setData(cs.map((c, i) => (isFinite(m.hist[i]) ? { time: ts(c.time), value: m.hist[i], color: histColor(m.hist[i]) } : { time: ts(c.time) })));
     }
+    if (opts.reframe) this.setAutoScale(true);
     if (opts.reframe || cfgChanged) this.frameRight();
     else if (pinned && range) {
       const shift = cs.length - prev.length;
@@ -239,6 +295,21 @@ export class ChartView {
     const n = this.last.length;
     const set = () => this.chart.timeScale().setVisibleLogicalRange({ from: n - 100, to: n + 12 });
     set(); requestAnimationFrame(set);
+  }
+  /** Show from the first candle at/after `time` (minus `pad` candles) to the last one. */
+  /** Show from `time` (minus `pad` bars) to the last bar, at least `span` bars wide (room for bars still to come). */
+  frameFrom(time: number, pad = 10, span = 0) {
+    const n = this.last.length;
+    let i = this.last.findIndex((c) => c.time >= time);
+    if (i < 0) i = Math.max(0, n - 100);
+    const from = Math.max(0, i - pad);
+    const set = () => this.chart.timeScale().setVisibleLogicalRange({ from, to: Math.max(n + 4, from + span) });
+    set(); requestAnimationFrame(set);
+  }
+  /** Show the last `bars` candles with a little room on the right. */
+  frameLast(bars: number) {
+    const n = this.last.length;
+    this.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - bars), to: n + 3 });
   }
   fitAll() { this.chart.timeScale().fitContent(); }
 

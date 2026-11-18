@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { hhmm } from '../core/day';
-import type { Replay } from '../engine/replay';
+import { rPerShare, type Replay } from '../engine/replay';
 import { usd } from './OrderTicket';
 import { fmtMove } from './pnl';
 
@@ -20,7 +20,7 @@ export function AccountPanel({ rep, open, setOpen }: { rep: Replay; open: boolea
         <span className="acctItem">Balance <b className="mono">{usd(rep.balance)}</b></span>
         {usdView && <span className="acctItem">Equity <b className="mono">{usd(rep.equity)}</b></span>}
         <span className="acctItem">Realized <b className={`mono ${cls(rep.realized)}`}>{usd(rep.realized, true)}</b></span>
-        <span className="acctItem">Open <b className={`mono ${cls(openMove)}`}>{p ? fmtMove(view, openMove, p.qty, p.risk) : '–'}</b></span>
+        <span className="acctItem">Open <b className={`mono ${cls(openMove)}`}>{p ? fmtMove(view, openMove, p.qty, rPerShare(p)) : '–'}</b></span>
         <button className="btab" onClick={() => setOpen(!open)} title={open ? 'Collapse' : 'Expand'}>{open ? '▾' : '▴'}</button>
       </div>
       {open && (
@@ -33,8 +33,8 @@ export function AccountPanel({ rep, open, setOpen }: { rep: Replay; open: boolea
                   <td className={p.side > 0 ? 'up' : 'down'}>{p.side > 0 ? 'Long' : 'Short'}</td><td className="mono">{p.qty}</td>
                   <td className="mono">{p.entry.toFixed(2)}</td><td className="mono">{rep.last.toFixed(2)}</td>
                   <td className="mono">{p.stop.toFixed(2)}</td><td className="mono">{p.target?.toFixed(2) ?? '–'}</td>
-                  <td className={`mono ${cls(openMove)}`}>{fmtMove(view, openMove, p.qty, p.risk)}</td>
-                  <td className={`mono ${cls(openMove)}`}>{(openMove / p.risk).toFixed(2)}</td>
+                  <td className={`mono ${cls(openMove)}`}>{fmtMove(view, openMove, p.qty, rPerShare(p))}</td>
+                  <td className={`mono ${cls(openMove)}`}>{(openMove / rPerShare(p)).toFixed(2)}</td>
                 </tr>
               </tbody></table>
             ) : <div className="muted empty">No open position</div>

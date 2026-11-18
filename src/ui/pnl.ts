@@ -18,3 +18,9 @@ export function fmtMove(view: PnlView, move: number, qty: number, riskPerShare: 
   const t = toTicks(move);
   return `${sign(t)}${Math.abs(t)} tick${Math.abs(t) === 1 ? '' : 's'}`;
 }
+
+/** Reward : risk of a bracket as it stands (target vs the current stop), e.g. "2.0:1". null if the stop is past entry. */
+export function rrRatio(side: number, entry: number, stop: number, target: number): string | null {
+  const risk = side * (entry - stop);
+  return risk > 0 ? `${(side * (target - entry) / risk).toFixed(1)}:1` : null;
+}

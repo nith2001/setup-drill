@@ -6,17 +6,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Connect, Logger, Plugin } from 'vite';
-import { AlpacaError, createClient, dailyCloses, fetchDate, fetchHistory, weekdays } from '../src/data/alpaca';
-import type { Dataset, SyncStatus } from '../src/core/types';
+import { AlpacaError, DAILY_LOOKBACK_DAYS, createClient, dailyBars, dayCtx, fetchDate, fetchHistory, h4Of, toSession, weekdays, type AlpacaBar, type AlpacaClient } from '../src/data/alpaca';
+import type { SessionBars } from '../src/core/candles';
+import type { Dataset, Day, SyncStatus } from '../src/core/types';
 
 export interface SyncOptions {
   key?: string;
   secret?: string;
   symbols: string[];
-  /** Target number of trading days to have cached. */
+  /** Target number of random trading days (all `symbols`) to have cached. */
   days: number;
-  /** Sample dates from the last N years. */
+  /** Sample those dates from the last N years. */
   years: number;
+  /** Index ETFs (futures stand-ins) downloaded for consecutive recent days. */
+  indexSymbols: string[];
+  indexDays: number;
   file: string;
 }
 
@@ -39,43 +43,109 @@ function writeCache(file: string, ds: Dataset) {
   fs.renameSync(tmp, file);
 }
 
-async function sync(o: SyncOptions & { key: string; secret: string }, log: Logger) {
-  const st = shared.status;
-  const sameSyms = (a: string[] = [], b: string[]) => a.join(',') === b.join(',');
-  let ds = readCache(o.file);
-  if (!ds || !sameSyms(ds.meta.symbols, o.symbols)) {
-    ds = { meta: { source: 'alpaca sip historical', symbols: o.symbols, tried: [] }, days: [] };
-  }
-  const tried = new Set(ds.meta.tried ?? []);
-  const haveDates = () => new Set(ds!.days.map((d) => d.date)).size;
-  st.days = haveDates(); st.target = o.days;
-  if (st.days >= o.days) { st.state = 'done'; st.message = `${st.days} trading days cached`; return; }
+const isoDay = (t: number) => new Date(t).toISOString().slice(0, 10);
 
-  const today = new Date(), from = new Date(+today - o.years * 365 * 864e5);
-  const candidates = weekdays(from, new Date(+today - 864e5)).filter((d) => !tried.has(d)).sort(() => Math.random() - 0.5);
-
-  st.state = 'syncing'; st.message = 'Fetching daily closes…';
-  log.info(`[data] syncing real data: have ${st.days}/${o.days} trading days`, { timestamp: true });
-  const client = createClient(o.key, o.secret);
-  const closes = await dailyCloses(client, o.symbols, from.toISOString().slice(0, 10));
-
-  let sinceSave = 0;
-  for (const date of candidates) {
-    if (haveDates() >= o.days) break;
-    st.message = `Downloading ${date}`;
-    const days = await fetchDate(client, o.symbols, date, closes);
-    ds.days.push(...days);
-    tried.add(date);
-    st.days = haveDates();
-    if (++sinceSave >= SAVE_EVERY) {
-      ds.meta.tried = [...tried]; ds.meta.generated = new Date().toISOString().slice(0, 10);
-      writeCache(o.file, ds); st.version++; sinceSave = 0;
+/** Fill `ctx.prev5` (prior session's 5-min closes) for days missing it, one symbol at a time. */
+async function backfillPrev5(client: AlpacaClient, ds: Dataset, st: SyncStatus, log: Logger) {
+  const missing = ds.days.filter((d) => d.ctx && (!d.ctx.prev5 || !d.ctx.vol5 || !d.ctx.h4));
+  if (!missing.length) return false;
+  const bySym = new Map<string, Day[]>();
+  for (const d of missing) (bySym.get(d.sym) ?? bySym.set(d.sym, []).get(d.sym)!).push(d);
+  let done = 0;
+  for (const [sym, days] of bySym) {
+    st.message = `Adding indicator warmup (${++done}/${bySym.size} symbols)…`;
+    const first = days.reduce((m, d) => (d.date < m ? d.date : m), days[0].date);
+    const last = days.reduce((m, d) => (d.date > m ? d.date : m), days[0].date);
+    const raw = (await client.bars([sym], '5Min', isoDay(Date.parse(first) - 35 * 864e5), `${last}T00:00:00Z`))[sym] || [];
+    const byDate = new Map<string, AlpacaBar[]>();
+    for (const b of raw) { const k = b.t.slice(0, 10); (byDate.get(k) ?? byDate.set(k, []).get(k)!).push(b); }
+    const sessions = [...byDate.keys()].sort().map((k) => toSession(k, byDate.get(k)!, 5, 30)).filter((x): x is SessionBars => !!x);
+    for (const d of days) {
+      let prev: SessionBars | undefined;
+      for (const s of sessions) { if (s.date < d.date) prev = s; else break; }
+      if (!d.ctx!.prev5) d.ctx!.prev5 = prev ? prev.c : [];
+      // Time-of-day volume baseline: average of each 5-min slot over the prior 20 sessions.
+      const before = sessions.filter((s) => s.date < d.date).slice(-20);
+      d.ctx!.h4 = h4Of(before.slice(-7));
+      if (before.length >= 5) d.ctx!.vol5 = Array.from({ length: 78 }, (_, k) => Math.round(before.reduce((a, s) => a + (s.v[k] ?? 0), 0) / before.length));
     }
   }
-  ds.meta.tried = [...tried]; ds.meta.generated = new Date().toISOString().slice(0, 10);
-  writeCache(o.file, ds); st.version++;
-  st.state = 'done'; st.message = `${st.days} trading days cached`;
-  log.info(`[data] sync done: ${st.days} trading days, ${ds.days.length} symbol-days`, { timestamp: true });
+  log.info(`[data] added indicator warmup + time-of-day volume to ${missing.length} days`, { timestamp: true });
+  return true;
+}
+
+async function sync(o: SyncOptions & { key: string; secret: string }, log: Logger) {
+  const st = shared.status;
+  const ds: Dataset = readCache(o.file) ?? { meta: { source: 'alpaca sip historical', tried: [] }, days: [] };
+  // Symbols can change without losing what's cached; new ones are just added from here on.
+  ds.meta.symbols = [...new Set([...o.symbols, ...o.indexSymbols])];
+  const isIdx = (s: string) => o.indexSymbols.includes(s);
+  const have = new Set(ds.days.map((d) => `${d.sym}|${d.date}`));
+  const add = (days: Day[]) => { for (const d of days) if (!have.has(`${d.sym}|${d.date}`)) { have.add(`${d.sym}|${d.date}`); ds.days.push(d); } };
+  const tried = new Set(ds.meta.tried ?? []), triedIdx = new Set(ds.meta.triedIndex ?? []);
+  const stockDates = () => new Set(ds.days.filter((d) => !isIdx(d.sym)).map((d) => d.date)).size;
+  const indexDates = () => new Set(ds.days.filter((d) => isIdx(d.sym)).map((d) => d.date)).size;
+  const progress = () => { st.days = Math.min(stockDates(), o.days) + Math.min(indexDates(), o.indexDays); };
+  const save = () => {
+    ds.meta.tried = [...tried]; ds.meta.triedIndex = [...triedIdx]; ds.meta.generated = isoDay(Date.now());
+    writeCache(o.file, ds); st.version++;
+  };
+  st.target = o.days + o.indexDays; progress();
+
+  const today = new Date(), from = new Date(+today - o.years * 365 * 864e5);
+  const client = createClient(o.key, o.secret);
+  const allSyms = ds.meta.symbols;
+  const dailyFrom = (d: Date) => isoDay(+d - DAILY_LOOKBACK_DAYS * 864e5);
+  st.state = 'syncing'; st.message = 'Fetching daily bars…';
+  const daily = await dailyBars(client, allSyms, dailyFrom(from));
+
+  // Prior-day levels / daily SMAs for days cached before that existed.
+  const missing = ds.days.filter((d) => !d.ctx);
+  if (missing.length) {
+    for (const d of missing) { const c = dayCtx(daily[d.sym], d.date); if (c) d.ctx = c; }
+    save(); log.info(`[data] added daily context to ${missing.length} days`, { timestamp: true });
+  }
+  // Daily closes for the higher-timeframe bias, for days cached before that existed.
+  const noCloses = ds.days.filter((d) => d.ctx && (!d.ctx.closes || !d.ctx.daily));
+  if (noCloses.length) {
+    for (const d of noCloses) { const c = dayCtx(daily[d.sym], d.date); if (c?.closes) { d.ctx!.closes = c.closes; d.ctx!.daily = c.daily; } }
+    save(); log.info(`[data] added daily closes (bias) to ${noCloses.length} days`, { timestamp: true });
+  }
+
+  // Random dates across `years`, all symbols.
+  if (stockDates() < o.days) {
+    log.info(`[data] syncing: ${stockDates()}/${o.days} random dates`, { timestamp: true });
+    const candidates = weekdays(from, new Date(+today - 864e5)).filter((d) => !tried.has(d)).sort(() => Math.random() - 0.5);
+    let n = 0;
+    for (const date of candidates) {
+      if (stockDates() >= o.days) break;
+      st.message = `Downloading ${date}`;
+      add(await fetchDate(client, o.symbols, date, daily));
+      tried.add(date); progress();
+      if (++n % SAVE_EVERY === 0) save();
+    }
+    save();
+  }
+
+  // Consecutive recent days of the index ETFs, newest first.
+  if (o.indexSymbols.length && indexDates() < o.indexDays) {
+    log.info(`[data] syncing index ETFs: ${indexDates()}/${o.indexDays} days`, { timestamp: true });
+    const span = Math.ceil((o.indexDays / 250) * 365) + 30;
+    const candidates = weekdays(new Date(+today - span * 864e5), new Date(+today - 864e5)).filter((d) => !triedIdx.has(d)).reverse();
+    let n = 0;
+    for (const date of candidates) {
+      if (indexDates() >= o.indexDays) break;
+      st.message = `Downloading ${o.indexSymbols.join('/')} ${date}`;
+      add(await fetchDate(client, o.indexSymbols, date, daily));
+      triedIdx.add(date); progress();
+      if (++n % SAVE_EVERY === 0) save();
+    }
+    save();
+  }
+
+  if (await backfillPrev5(client, ds, st, log)) save();
+  st.state = 'done'; st.message = `${stockDates()} random dates + ${indexDates()} index days cached`;
+  log.info(`[data] sync done: ${ds.days.length} symbol-days`, { timestamp: true });
 }
 
 function start(o: SyncOptions, log: Logger) {

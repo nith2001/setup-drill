@@ -1,3 +1,5 @@
+import { hhmm } from './day';
+import { idealTrade } from './ideal';
 import { clamp } from './math';
 import type { Day, Eval, Side, Trade } from './types';
 
@@ -20,31 +22,40 @@ export function gradeDecision(ev: Eval, trades: GradedTrade[], day: Day): Decisi
     notes.push(`There was no valid setup, but you took ${trades.length} trade${trades.length > 1 ? 's' : ''}.`);
     return { score: s, correct: false, verdict: 'Forced trade', parts: { Decision: [s, 100] }, notes };
   }
-  const { dir, trigIdx } = ev;
-  const good = trades.find((t) => t.side === dir && t.entryIdx >= trigIdx && t.entryIdx <= trigIdx + 3);
+  // Candles: the rule may run on 5-min candles. Indices are 1-min; "3 bars" means 3 rule candles.
+  const { dir, trigIdx } = ev, bm = ev.barMin ?? 1, lim = 3 * bm;
+  const barsLate = (idx: number) => Math.ceil((idx - trigIdx) / bm);
+  const good = trades.find((t) => t.side === dir && t.entryIdx >= trigIdx && t.entryIdx <= trigIdx + lim);
   const others = trades.filter((t) => t !== good);
   const early = others.filter((t) => t.entryIdx < trigIdx).length;
   const wrongDir = others.filter((t) => t.side !== dir && t.entryIdx >= trigIdx).length;
-  const late = others.find((t) => t.side === dir && t.entryIdx > trigIdx + 3);
+  const late = others.find((t) => t.side === dir && t.entryIdx > trigIdx + lim);
   let decision = 0, timing = 0, stop = 0, correct = false, verdict: string;
   if (good) {
     decision = 50; correct = true; verdict = 'Good take';
-    timing = 15 - 5 * (good.entryIdx - trigIdx);
-    const trigExt = dir > 0 ? day.l[trigIdx] : day.h[trigIdx];
+    timing = 15 - 5 * barsLate(good.entryIdx);
+    let trigExt = dir > 0 ? Infinity : -Infinity; // the trigger candle's low (long) / high (short)
+    for (let i = Math.max(0, trigIdx - bm + 1); i <= trigIdx; i++) trigExt = dir > 0 ? Math.min(trigExt, day.l[i]) : Math.max(trigExt, day.h[i]);
     const buf = day.c[trigIdx] * 0.0005;
     const beyondTrig = dir > 0 ? good.stop0 <= trigExt + buf : good.stop0 >= trigExt - buf;
     const notTooWide = dir > 0 ? good.stop0 >= ev.refStop - buf : good.stop0 <= ev.refStop + buf;
     if (beyondTrig && notTooWide) { stop = 20; notes.push('Stop placed per the rule.'); }
     else if (!beyondTrig) { stop = 5; notes.push(`Stop was inside the trigger candle (needed ${dir > 0 ? '≤' : '≥'} ${trigExt.toFixed(2)}).`); }
     else { stop = 10; notes.push(`Stop was wider than the rule allows (limit ${ev.refStop.toFixed(2)}).`); }
-    const lateBy = good.entryIdx - trigIdx;
-    if (lateBy > 0) notes.push(`Entered ${lateBy} bar${lateBy > 1 ? 's' : ''} after the trigger.`);
+    const lateBy = barsLate(good.entryIdx);
+    if (lateBy > 0) notes.push(`Entered ${lateBy} candle${lateBy > 1 ? 's' : ''} after the trigger.`);
   } else if (late) {
     decision = 15; verdict = 'Chased';
-    notes.push(`Right idea, but you entered ${late.entryIdx - trigIdx} bars after the trigger (limit 3).`);
+    notes.push(`Right idea, but you entered ${barsLate(late.entryIdx)} candles after the trigger (limit 3).`);
   } else {
     verdict = 'Missed setup';
     notes.push("A valid setup triggered and you didn't take it.");
+  }
+  // Valid setups lose too. Say so, so a correct loss never feels like a mistake.
+  const x = idealTrade(day, ev);
+  if (x.outcome === 'stop') {
+    if (good) notes.push(`This one lost: the textbook trade was stopped out at ${hhmm(x.exitIdx)}. That's fine. It was a valid setup and you took it the right way. Valid setups still lose; the edge comes from taking every one with the same risk. You're graded on the decision, not the result.`);
+    else notes.push(`The textbook trade would have been stopped out at ${hhmm(x.exitIdx)} this time, but it was still a valid setup. You can't know which ones lose in advance, so the right call is to take them all.`);
   }
   const chased = good ? undefined : late; // a chased entry is already penalized above, not as an extra trade
   const extra = others.filter((t) => t !== chased).length;

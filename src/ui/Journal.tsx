@@ -70,7 +70,7 @@ function RepDetail({ e }: { e: JournalEntry }) {
       ) : <div className="muted small">{e.valid === false ? 'No trade taken (this chart had no valid setup).' : 'No trades.'}</div>}
       <ReviewBox entryId={e.id} />
       <div className="detailFoot">
-        <span className="muted small">{e.sym} · {e.date}{e.attempt > 1 ? ` · attempt ${e.attempt}` : ''} · finished {new Date(e.ts).toLocaleString()}</span>
+        <span className="muted small">{e.sym} · {e.date} · {e.tf ?? 1}-min candles{e.attempt > 1 ? ` · attempt ${e.attempt}` : ''} · finished {new Date(e.ts).toLocaleString()}</span>
         <button className="linkbtn danger" onClick={() => { if (confirm('Delete this rep from your journal?')) deleteEntry(e.id); }}>Delete</button>
       </div>
     </div>

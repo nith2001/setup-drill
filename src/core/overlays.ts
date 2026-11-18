@@ -9,6 +9,10 @@ export interface IndicatorConfig {
   vwap: boolean;
   /** Opening-range high/low lines (length set in Settings). */
   or: boolean;
+  /** Prior day high / low / close lines. */
+  pd: boolean;
+  /** Daily 50 & 200 SMA as horizontal levels (from daily closes before today). */
+  dsma: boolean;
   volume: boolean;
   rsi: { on: boolean; period: number };
   macd: { on: boolean; fast: number; slow: number; signal: number };
@@ -23,28 +27,29 @@ export const DEFAULT_INDICATORS: IndicatorConfig = {
     { id: 'sma50', type: 'sma', period: 50, color: '#c792ea', on: false },
     { id: 'sma200', type: 'sma', period: 200, color: '#ff7b72', on: false },
   ],
-  vwap: true,
+  vwap: false,
   or: false,
+  pd: false,
+  dsma: false,
   volume: true,
   rsi: { on: false, period: 14 },
   macd: { on: false, fast: 12, slow: 26, signal: 9 },
 };
 
-/** What a setup drill needs switched on. */
-export interface Preset { mas?: { type: MAType; period: number }[]; rsi?: boolean; macd?: boolean; vwap?: boolean; or?: boolean }
+/** The indicators a setup drill shows. Anything not listed is off (volume defaults on). */
+export interface Preset { mas?: { type: MAType; period: number }[]; rsi?: boolean; macd?: boolean; vwap?: boolean; or?: boolean; pd?: boolean; dsma?: boolean; volume?: boolean }
 
-export function applyPreset(cfg: IndicatorConfig, p?: Preset): IndicatorConfig {
-  const out: IndicatorConfig = structuredClone(cfg);
-  if (!p) return out;
+/** A complete indicator config for a setup: exactly what its preset lists, nothing else. */
+export function presetConfig(p: Preset = {}): IndicatorConfig {
+  const out: IndicatorConfig = structuredClone(DEFAULT_INDICATORS);
+  for (const m of out.mas) m.on = false;
+  out.vwap = !!p.vwap; out.or = !!p.or; out.pd = !!p.pd; out.dsma = !!p.dsma; out.volume = p.volume ?? true;
+  out.rsi.on = !!p.rsi; out.macd.on = !!p.macd;
   for (const want of p.mas ?? []) {
     const hit = out.mas.find((m) => m.type === want.type && m.period === want.period);
     if (hit) hit.on = true;
     else out.mas.push({ id: `${want.type}${want.period}`, type: want.type, period: want.period, color: MA_COLORS[out.mas.length % MA_COLORS.length], on: true });
   }
-  if (p.rsi) out.rsi.on = true;
-  if (p.macd) out.macd.on = true;
-  if (p.vwap != null) out.vwap = p.vwap;
-  if (p.or) out.or = true;
   return out;
 }
 

@@ -4,9 +4,18 @@ dist/
 data/
 # Your personal trade journal (local only)
 journal/
+# Chart reports ("this chart is wrong") saved from the app, local only
+reports/
 .env
 .env.*
 !.env.example
 __pycache__/
 .DS_Store
 .gstack/
+
+# Example screenshots show Alpaca market data (not redistributable)
+screenshots/
+.vitest/
+
+# Loose screenshots dropped in the repo root (may show market data)
+/Screenshot*.png

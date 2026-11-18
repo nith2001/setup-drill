@@ -285,3 +285,46 @@ h2.group{grid-column:1/-1;margin:14px 0 0}
 @media (max-width:760px){.twoCol{grid-template-columns:1fr}.todayStrip{flex-wrap:wrap;gap:16px}.pageHead{flex-direction:column;align-items:flex-start}.setRow{flex-direction:column;align-items:flex-start}}
 .sheetReview h4 .small{text-transform:none;letter-spacing:0;margin-left:6px;font-weight:400}
 .card .go{margin-top:auto}
+
+/* ---------- Examples ---------- */
+.card{cursor:pointer}
+
+.exampleTag{background:rgba(41,98,255,.18);color:#82a8ff;border:1px solid rgba(41,98,255,.5);border-radius:4px;padding:2px 8px;font-size:12px;font-weight:600;margin-left:8px}
+.exampleCard p{margin:6px 0 10px;line-height:1.45}
+.exampleCard .kv{margin:4px 0}
+.exActions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.exActions button{flex:1 1 45%}
+.exActions .primary{flex-basis:100%}
+.card .cardLinks{display:flex;gap:14px}
+.card .cardLinks .linkbtn{font-size:12px;padding:0}
+.card .tutorialLink{font-weight:600}
+.tutorialCard .tutTitle{margin:4px 0 6px;font-size:15px}
+.tutProgress{display:flex;gap:4px;margin-bottom:8px}
+.tutProgress span{flex:1;height:3px;border-radius:2px;background:var(--border,#2a2e39)}
+.tutProgress span.past{background:#2962ff88}
+.tutProgress span.now{background:#2962ff}
+.tutList{margin:4px 0 8px;padding-left:18px}
+.tutList li{margin:2px 0}
+.howTo p{margin:6px 0}
+.lossNote{border-left:3px solid #f2364588;padding-left:8px}
+
+.ruleTf{font-size:11.5px;color:var(--muted,#8a8f9c);margin-bottom:6px}
+.ruleSec{margin:0 0 8px}
+.ruleHead{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted,#8a8f9c);margin-bottom:2px}
+.ruleText ul{margin:0;padding-left:16px}
+.ruleText li{margin:1px 0}
+.reportPanel{max-width:440px}
+.reportReasons{display:flex;flex-direction:column;gap:6px;margin:10px 0}
+.reportReasons label{display:flex;gap:8px;align-items:flex-start;cursor:pointer}
+.reportNote{width:100%;box-sizing:border-box;background:var(--bg2,#1e222d);color:inherit;border:1px solid var(--border,#2a2e39);border-radius:6px;padding:8px;font:inherit;font-size:13px;resize:vertical}
+.autoBtn{position:absolute;z-index:6;padding:2px 8px;font-size:11px;border-radius:4px;border:1px solid #2a2e39;background:#1e222d;color:#787b86;cursor:pointer}
+.autoBtn.on{color:#2962ff;border-color:#2962ff66}
+.autoBtn:hover{color:#d1d4dc}
+.sheetTextbook{margin:10px 0;text-align:left}
+.sheetTextbook h4{margin:0 0 6px}
+/* Result sheet: never taller than the window; scrolls inside, buttons stay pinned at the bottom. */
+#result .sheet{max-height:calc(100vh - 16px);overflow-y:auto;overscroll-behavior:contain;padding-bottom:0}
+#result .sheet .resActions{position:sticky;bottom:0;background:var(--panel);padding:12px 0 16px;margin-top:8px;border-top:1px solid var(--line);z-index:1}
+.rrBox{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:8px 0;display:grid;gap:4px}
+.rrBox b{font-size:15px}
+.stepper{display:inline-flex;align-items:center;gap:8px}.stepper b{min-width:18px;text-align:center}

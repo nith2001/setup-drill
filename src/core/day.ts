@@ -32,6 +32,19 @@ export function vwapAt(day: Day, i: number): number {
 }
 
 /** Volume of bar i relative to the average of the prior `lookback` bars. */
+/**
+ * Time-of-day relative volume of candle i: its volume vs the average volume of the same minutes over
+ * recent sessions (`ctx.vol5`). The opening always trades heavier than midday, so this is the fair
+ * comparison. Falls back to `relVol` when the day has no baseline.
+ */
+export function rvolTod(day: Day, i: number): number {
+  const base = day.ctx?.vol5, m = day.barMin ?? 1;
+  if (!base?.length) return relVol(day, i);
+  let exp = 0;
+  for (let min = i * m; min < i * m + m; min++) exp += (base[Math.floor(min / 5)] ?? 0) / 5;
+  return exp > 0 ? day.v[i] / exp : relVol(day, i);
+}
+
 export function relVol(day: Day, i: number, lookback = 10): number {
   let s = 0, n = 0;
   for (let k = Math.max(0, i - lookback); k < i; k++) { s += day.v[k]; n++; }
@@ -64,4 +77,24 @@ export function extreme(day: Day, dir: number, from: number, to: number): number
   let ref = dir > 0 ? Infinity : -Infinity;
   for (let k = from; k <= to; k++) ref = dir > 0 ? Math.min(ref, day.l[k]) : Math.max(ref, day.h[k]);
   return ref;
+}
+
+/**
+ * The day as `m`-minute bars (cached). Bar b covers minutes b*m .. b*m+m-1. Carries the prior
+ * session's 5-min closes as `warm` so indicators on 5-min bars don't start cold.
+ */
+export function barsOf(day: Day, m: number): Day {
+  if (m <= 1) return day;
+  const cache = (day._tf ??= {});
+  if (cache[m]) return cache[m];
+  const n = day.c.length, nb = Math.ceil(n / m);
+  const out: Day = { sym: day.sym, date: day.date, pc: day.pc, ctx: day.ctx, o: [], h: [], l: [], c: [], v: [], barMin: m,
+    warm: m === 5 ? day.ctx?.prev5 : undefined };
+  for (let b = 0; b < nb; b++) {
+    const s = b * m, e = Math.min(n - 1, s + m - 1);
+    let h = -Infinity, l = Infinity, v = 0;
+    for (let i = s; i <= e; i++) { if (day.h[i] > h) h = day.h[i]; if (day.l[i] < l) l = day.l[i]; v += day.v[i]; }
+    out.o.push(day.o[s]); out.h.push(h); out.l.push(l); out.c.push(day.c[e]); out.v.push(v);
+  }
+  return (cache[m] = out);
 }

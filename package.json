@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "reports": "CHECK=reports VITE_CONFIG_NATIVE_IGNORE_WARNING=true vitest run --reporter=dot",
+    "audit": "CHECK=audit VITE_CONFIG_NATIVE_IGNORE_WARNING=true vitest run --reporter=dot"
   },
   "dependencies": {
     "lightweight-charts": "^5.3.0",

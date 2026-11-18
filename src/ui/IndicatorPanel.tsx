@@ -1,10 +1,10 @@
 import { MA_COLORS, type IndicatorConfig, type MAType } from '../core/overlays';
 
-interface Props { cfg: IndicatorConfig; onChange: (c: IndicatorConfig) => void; onClose: () => void }
+interface Props { cfg: IndicatorConfig; onChange: (c: IndicatorConfig) => void; onClose: () => void; setupLabel?: string; onReset?: () => void }
 
 const num = (v: string, min = 1, max = 500) => Math.max(min, Math.min(max, Math.round(Number(v) || min)));
 
-export function IndicatorPanel({ cfg, onChange, onClose }: Props) {
+export function IndicatorPanel({ cfg, onChange, onClose, setupLabel, onReset }: Props) {
   const set = (fn: (c: IndicatorConfig) => void) => { const c = structuredClone(cfg); fn(c); onChange(c); };
   const addMA = () => set((c) => {
     const id = `ma${Date.now()}`;
@@ -15,6 +15,9 @@ export function IndicatorPanel({ cfg, onChange, onClose }: Props) {
     <div className="modal" onClick={onClose}>
       <div className="panel" onClick={(e) => e.stopPropagation()}>
         <div className="panelHead"><h3>Indicators</h3><button className="ghost" onClick={onClose}>Done</button></div>
+        {setupLabel && (
+          <p className="muted small indScope">Settings for <b>{setupLabel}</b> drills only. {onReset && <button className="linkbtn" onClick={onReset}>Reset to this setup's indicators</button>}</p>
+        )}
 
         <h4>Moving averages</h4>
         {cfg.mas.map((m, i) => (
@@ -33,6 +36,8 @@ export function IndicatorPanel({ cfg, onChange, onClose }: Props) {
         <h4>Price chart</h4>
         <label className="indRow"><input type="checkbox" checked={cfg.vwap} onChange={(e) => set((c) => { c.vwap = e.target.checked; })} /> VWAP <span className="muted">(intraday charts)</span></label>
         <label className="indRow"><input type="checkbox" checked={cfg.or} onChange={(e) => set((c) => { c.or = e.target.checked; })} /> Opening range <span className="muted">(high/low of the first minutes; length in Settings)</span></label>
+        <label className="indRow"><input type="checkbox" checked={cfg.pd} onChange={(e) => set((c) => { c.pd = e.target.checked; })} /> Prior day high / low / close</label>
+        <label className="indRow"><input type="checkbox" checked={cfg.dsma} onChange={(e) => set((c) => { c.dsma = e.target.checked; })} /> Daily 50 &amp; 200 SMA levels <span className="muted">(the daily averages, drawn as lines on intraday charts)</span></label>
         <label className="indRow"><input type="checkbox" checked={cfg.volume} onChange={(e) => set((c) => { c.volume = e.target.checked; })} /> Volume</label>
 
         <h4>Lower panes</h4>

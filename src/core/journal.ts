@@ -27,8 +27,26 @@ export interface JournalEntry {
   trades: JournalTrade[];
   /** 1 for the first run of a chart, 2+ after "Restart chart". */
   attempt: number;
+  /** Candle size (minutes) the rule ran on; missing on old entries (1-min). */
+  tf?: number;
+  /** First 1-min bar of a setup rep (identifies the event when a day has several). */
+  start?: number;
   notes: string;
   tags: string[];
+}
+
+/**
+ * Entries that are restarts of a chart already in the journal: attempt 2+ with an earlier entry for the
+ * same chart (setup, symbol, date, start). Only the first run of a chart counts.
+ */
+export function restartDupes(entries: JournalEntry[]): string[] {
+  const seen = new Set<string>(), out: string[] = [];
+  for (const e of [...entries].sort((a, b) => a.ts - b.ts)) {
+    const k = `${e.setup}|${e.sym}|${e.date}|${e.start ?? ''}`;
+    if (seen.has(k) && e.attempt > 1) out.push(e.id);
+    seen.add(k);
+  }
+  return out;
 }
 
 /** Quick self-review tags offered after each rep. */
@@ -99,11 +117,11 @@ export function tagCounts(es: JournalEntry[]): [string, number][] {
 
 /** One row per trade, for spreadsheets. */
 export function toCsv(es: JournalEntry[]): string {
-  const head = ['finished', 'setup', 'symbol', 'chart_date', 'attempt', 'valid_setup', 'grade', 'score', 'side', 'qty', 'entry', 'exit', 'stop', 'in', 'out', 'ticks', 'pnl_usd', 'R', 'exit_reason', 'tags', 'notes'];
+  const head = ['finished', 'setup', 'symbol', 'chart_date', 'candles', 'attempt', 'valid_setup', 'grade', 'score', 'side', 'qty', 'entry', 'exit', 'stop', 'in', 'out', 'ticks', 'pnl_usd', 'R', 'exit_reason', 'tags', 'notes'];
   const q = (v: unknown) => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const rows = [head.join(',')];
   for (const e of [...es].sort((a, b) => a.ts - b.ts)) {
-    const base = [new Date(e.ts).toISOString(), e.setupLabel, e.sym, e.date, e.attempt, e.valid ?? '', e.grade, e.score ?? ''];
+    const base = [new Date(e.ts).toISOString(), e.setupLabel, e.sym, e.date, `${e.tf ?? 1}m`, e.attempt, e.valid ?? '', e.grade, e.score ?? ''];
     const tail = [e.tags.join('; '), e.notes];
     if (!e.trades.length) rows.push([...base, '', '', '', '', '', '', '', '', '', '', '', ...tail].map(q).join(','));
     for (const t of e.trades) rows.push([...base, t.side > 0 ? 'long' : 'short', t.qty, t.entry, t.exit, t.stop0, t.inAt, t.outAt, t.ticks, t.pnl.toFixed(2), t.R.toFixed(2), t.reason, ...tail].map(q).join(','));

@@ -4,7 +4,7 @@ import type { Dataset, SyncStatus } from '../core/types';
 import type { OrderSettings } from '../engine/replay';
 import { useJournal } from './Journal';
 import { PNL_VIEWS } from './pnl';
-import { app, loadOrder, saveOrder, saveSettings, setData, settings, toast, type Settings as S } from './state';
+import { app, loadOrder, saveOrder, saveSettings, setData, settings, toast, universeAvailable, type Settings as S, type Universe } from './state';
 
 interface Props { sync: SyncStatus | null; onLoad: (ds: Dataset) => void }
 
@@ -27,12 +27,13 @@ export function Settings({ sync, onLoad }: Props) {
   const j = useJournal();
   const order = loadOrder();
 
-  const setSetting = (key: keyof S, v: number) => {
+  const setSetting = (key: Exclude<keyof S, 'universe'>, v: number) => {
     settings[key] = v;
     saveSettings();
-    if (key === 'orMin') setData(app.data); // ORB pools depend on the range length
+    if (key === 'orMin' || key === 'ruleTf') setData(app.data); // pools depend on these
     rerender();
   };
+  const setUniverse = (u: Universe) => { settings.universe = u; saveSettings(); setData(app.data); rerender(); };
   const setOrder = (p: Partial<OrderSettings>) => { saveOrder({ ...order, ...p }); rerender(); };
 
   const onFile = async (f: File | undefined) => {
@@ -52,17 +53,23 @@ export function Settings({ sync, onLoad }: Props) {
 
       <section className="panelCard">
         <h3>Practice</h3>
+        <Row label="Practice on" hint={universeAvailable('index') ? 'Index ETFs behave like index futures (SPY ≈ ES, QQQ ≈ NQ).' : 'No SPY/QQQ days downloaded yet, so all symbols are used.'}>
+          <Seg value={settings.universe} opts={[['index', 'SPY / QQQ'], ['stocks', 'Stocks'], ['all', 'Everything']]} onChange={setUniverse} />
+        </Row>
+        <Row label="Rule candles" hint="Candle size the setup rules run on. 5-min filters out 1-min noise and suits trades that last hours. Changes which charts count as valid.">
+          <Seg value={settings.ruleTf} opts={[[5, '5-min'], [1, '1-min']]} onChange={(v) => setSetting('ruleTf', v)} />
+        </Row>
         <Row label="Blind mode" hint="Hide the ticker and date while you trade (revealed on the grade sheet).">
           <Seg value={settings.blind} opts={[[1, 'On'], [0, 'Off']]} onChange={(v) => setSetting('blind', v)} />
         </Row>
         <Row label="Opening range" hint="Length used by the ORB setup and the Opening range indicator.">
           <Seg value={settings.orMin} opts={[[5, '5 min'], [15, '15 min'], [30, '30 min']]} onChange={(v) => setSetting('orMin', v)} />
         </Row>
+        <Row label="Slow down on entry" hint="When you open a trade, the replay drops to 1× real time so you manage the position live. Speed it back up any time.">
+          <Seg value={settings.autoSlow} opts={[[1, 'On'], [0, 'Off']]} onChange={(v) => setSetting('autoSlow', v)} />
+        </Row>
         <Row label="Free play start" hint="Random: anywhere from the open to 2 hours before the close. You still see the earlier part of the day.">
           <Seg value={settings.fpStart} opts={[[1, 'Random time'], [0, 'At the open']]} onChange={(v) => setSetting('fpStart', v)} />
-        </Row>
-        <Row label="Free play length" hint="How much of the day a free-play rep covers.">
-          <Seg value={settings.repMin} opts={[[60, '1 hour'], [120, '2 hours'], [999, 'Full day']]} onChange={(v) => setSetting('repMin', v)} />
         </Row>
       </section>
 

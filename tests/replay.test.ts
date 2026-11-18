@@ -2,7 +2,7 @@ import assert from 'node:assert';
 import { test } from 'vitest';
 import { buildCandles, historyFromDays, nextBarEnd } from '../src/core/candles';
 import { genDataset } from '../src/core/demo';
-import { applyPreset, DEFAULT_INDICATORS, vwapSeries } from '../src/core/overlays';
+import { DEFAULT_INDICATORS, presetConfig, vwapSeries } from '../src/core/overlays';
 import { Replay } from '../src/engine/replay';
 
 const ds = genDataset(3, '2025-06-30', 30);
@@ -45,13 +45,15 @@ test('vwapSeries resets each day', () => {
   assert.ok(Math.abs(v[firstToday] - (c0.high + c0.low + c0.close) / 3) < 1e-9);
 });
 
-test('applyPreset switches on what a drill needs without losing user MAs', () => {
-  const c = applyPreset(DEFAULT_INDICATORS, { mas: [{ type: 'ema', period: 9 }, { type: 'sma', period: 13 }], rsi: true, vwap: false });
+test('presetConfig shows exactly what a drill lists', () => {
+  const c = presetConfig({ mas: [{ type: 'ema', period: 9 }, { type: 'sma', period: 13 }], rsi: true });
   assert.ok(c.mas.find((m) => m.id === 'ema9')!.on);
   assert.ok(c.mas.some((m) => m.type === 'sma' && m.period === 13 && m.on));
+  assert.ok(!c.mas.find((m) => m.id === 'ema20')!.on, 'unlisted MAs off');
   assert.strictEqual(c.mas.length, DEFAULT_INDICATORS.mas.length + 1);
-  assert.ok(c.rsi.on && !c.vwap);
-  assert.ok(!DEFAULT_INDICATORS.mas[0].on, 'defaults not mutated');
+  assert.ok(c.rsi.on && !c.vwap && !c.macd.on && c.volume);
+  assert.ok(presetConfig({ pd: true, dsma: true, vwap: true }).pd && presetConfig({ vwap: true }).vwap);
+  assert.ok(!DEFAULT_INDICATORS.vwap && !DEFAULT_INDICATORS.pd && !DEFAULT_INDICATORS.mas[0].on, 'defaults off and not mutated');
 });
 
 function mkRep() {
@@ -152,4 +154,92 @@ test('journal store: add, patch, dedupe, delete (file)', async () => {
   assert.ok(st.remove('b'));
   const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.deepStrictEqual(saved.entries.map((x: { id: string; notes: string }) => [x.id, x.notes]), [['a', 'hi']]);
+});
+
+test('minutePath: starts at the open, ends at the close, touches high and low, stays inside, repeats', async () => {
+  const { minutePath, TICKS } = await import('../src/core/path');
+  for (let i = 0; i < day.c.length; i += 7) {
+    const p = minutePath(day, i);
+    assert.strictEqual(p.length, TICKS + 1);
+    assert.strictEqual(p[0], day.o[i]); assert.strictEqual(p[TICKS], day.c[i]);
+    if (day.h[i] > day.l[i]) { assert.ok(p.includes(day.h[i]) && p.includes(day.l[i]), `bar ${i} reaches H and L`); }
+    assert.ok(p.every((x) => x >= day.l[i] - 1e-9 && x <= day.h[i] + 1e-9), `bar ${i} inside its range`);
+    assert.deepStrictEqual(minutePath(day, i), p, 'same path every time');
+  }
+});
+
+test('Replay real-time: forming bar ticks along the path, completes to real OHLC, chart merges it', async () => {
+  const { TICKS } = await import('../src/core/path');
+  const r = mkRep();
+  r.advanceTo(30);
+  assert.strictEqual(r.sub, -1);
+  (r as any).stepTicks(TICKS / 2 + 1); // open + half the minute
+  const f = r.forming!;
+  assert.strictEqual(f.idx, 31);
+  assert.ok(f.h <= day.h[31] && f.l >= day.l[31] && r.last === f.c && r.seconds === 30);
+  const cs = buildCandles(1, hist, day, r.cur, undefined, f);
+  assert.strictEqual(cs[cs.length - 1].close, f.c, 'forming bar is the last 1m candle');
+  const c5 = buildCandles(5, hist, day, r.cur, undefined, f);
+  assert.strictEqual(c5[c5.length - 1].close, f.c, 'and is merged into its 5m candle');
+  r.advanceTo(31);
+  assert.strictEqual(r.cur, 31); assert.strictEqual(r.sub, -1); assert.strictEqual(r.last, day.c[31]);
+});
+
+test('Replay real-time: stops fill on the tick path; auto-slow drops to 1× on entry', () => {
+  const r = mkRep();
+  r.advanceTo(30);
+  r.setSpeed(60);
+  r.setStop(r.last - 0.05);
+  assert.strictEqual(r.enter(1), null);
+  assert.strictEqual(r.speed, 1, 'auto-slow');
+  const stop = r.pos!.stop;
+  r.advanceTo(199);
+  const t = r.trades[0];
+  assert.ok(t, 'trade closed');
+  if (t.reason === 'stop') assert.ok(t.exit === stop || t.exit < stop, 'filled at the stop (or a gap below it)');
+  assert.ok(t.exitIdx > 30);
+});
+
+test('Replay: an open trade keeps the rep going past its window until it closes or the day ends', () => {
+  // Wide bracket so it stays open past the window.
+  const r = new Replay({ setup: 'random', def: null, day, ev: null, startIdx: 20, endIdx: 60, orMin: 15 });
+  r.advanceTo(50);
+  r.setStop(r.last * 0.5);
+  r.setTarget(r.last * 2);
+  assert.strictEqual(r.enter(1), null);
+  r.advanceTo(60);
+  assert.ok(!r.done && r.overtime, 'still running at the window end');
+  r.advanceTo(80);
+  assert.strictEqual(r.cur, 80);
+  r.flatten();
+  r.stepMinute();
+  assert.ok(r.done && r.trades[0].reason === 'manual', 'ends once flat past the window');
+  // Never entered: ends at the window as before.
+  const q = new Replay({ setup: 'random', def: null, day, ev: null, startIdx: 20, endIdx: 60, orMin: 15 });
+  q.stepBar('D');
+  assert.ok(q.done && q.cur === 60);
+  // Still open at the close: closed at the last price.
+  const s = new Replay({ setup: 'random', def: null, day, ev: null, startIdx: 20, endIdx: 60, orMin: 15 });
+  s.advanceTo(50); s.setStop(s.last * 0.5); s.setTarget(s.last * 2); s.enter(1);
+  s.stepBar('D'); s.stepBar('D');
+  assert.ok(s.done && s.cur === day.c.length - 1 && s.trades[0].reason === 'end');
+});
+
+test('contracts: size scales by contract and R is measured against one contract', () => {
+  const mk = (contracts: number) => {
+    const r = new Replay({ setup: 'random', def: null, day, ev: null, startIdx: 60, endIdx: 389, orMin: 15, order: { account: 50000, riskMode: 'usd', risk: 250, rr: 2, tpOn: false, pnlView: 'ticks', contracts } });
+    r.advanceTo(80);
+    return r;
+  };
+  const one = mk(1), two = mk(2);
+  const p1 = one.planFor(1), p2 = two.planFor(1);
+  assert.strictEqual(p2.unitQty, p1.unitQty);
+  assert.strictEqual(p2.qty, 2 * p1.qty);
+  assert.ok(Math.abs(p2.riskUsd - 2 * p1.riskUsd) < 1e-6);
+  assert.strictEqual(two.enter(1), null);
+  two.advanceTo(389); // runs until stopped or the close
+  const t = two.trades[0];
+  assert.ok(t, 'trade closed');
+  const perContract = (t.exit - t.entry) / (t.entry - t.stop0);
+  assert.ok(Math.abs(t.R - 2 * perContract) < 1e-6, `R ${t.R} = 2 × ${perContract}`);
 });

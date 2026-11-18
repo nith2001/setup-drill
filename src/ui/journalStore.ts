@@ -1,7 +1,7 @@
 // Client side of the trade journal. Saves to journal/journal.json through the dev server;
 // if the server isn't reachable (e.g. a static build) it falls back to this browser's storage.
-import { newEntryId, type JournalEntry } from '../core/journal';
-import { store } from './state';
+import { newEntryId, restartDupes, type JournalEntry } from '../core/journal';
+import { store, toast } from './state';
 
 type Mode = 'file' | 'browser';
 const LOCAL_KEY = 'drill.journal';
@@ -54,6 +54,8 @@ export async function loadJournal(labelFor: (setup: string) => string) {
     journal.mode = 'browser';
     journal.entries = [...legacyEntries(), ...store.get<JournalEntry[]>(LOCAL_KEY, [])];
   }
+  // Restarted charts used to be saved as extra entries: keep only each chart's first run.
+  for (const id of restartDupes(journal.entries)) await deleteEntry(id);
   journal.loaded = true;
   emit();
 }
@@ -72,13 +74,13 @@ export async function updateEntry(id: string, p: { notes?: string; tags?: string
   if (!e) return;
   Object.assign(e, p);
   saveLocal(); emit();
-  if (journal.mode === 'file') await api('PATCH', `/api/journal/${encodeURIComponent(id)}`, p).catch(() => {});
+  if (journal.mode === 'file') await api('PATCH', `/api/journal/${encodeURIComponent(id)}`, p).catch(() => toast("Couldn't save your note / tags to the journal file. Is the dev server running?"));
 }
 
 export async function deleteEntry(id: string) {
   journal.entries = journal.entries.filter((x) => x.id !== id);
   saveLocal(); emit();
-  if (journal.mode === 'file') await api('DELETE', `/api/journal/${encodeURIComponent(id)}`).catch(() => {});
+  if (journal.mode === 'file') await api('DELETE', `/api/journal/${encodeURIComponent(id)}`).catch(() => toast("Couldn't delete that entry from the journal file. It will come back on reload."));
 }
 
 /** Save a file to the user's downloads. */

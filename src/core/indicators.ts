@@ -35,10 +35,14 @@ export function macdArr(c: number[], fast = 12, slow = 26, signal = 9) {
   return { macd, signal: sig, hist: macd.map((v, i) => v - sig[i]) };
 }
 
-/** Indicators the setup rules use, computed on the day's 1-min closes (no prior-day warmup). Cached on the day. */
+/**
+ * Indicators the setup rules use, on the series' closes. If the series carries `warm` (prior
+ * session closes), they're computed over warm + today and then trimmed, so they don't start cold.
+ */
 export function indicators(day: Day): Indicators {
   if (day._ind) return day._ind;
-  const c = day.c, m = macdArr(c, 12, 26, 9);
-  day._ind = { e9: emaArr(c, 9), e20: emaArr(c, 20), sma50: smaArr(c, 50), rsi: rsiArr(c, 14), macd: m.macd, sig: m.signal, hist: m.hist };
+  const w = day.warm?.length ? day.warm : [], c = w.length ? [...w, ...day.c] : day.c, m = macdArr(c, 12, 26, 9);
+  const cut = (a: number[]) => (w.length ? a.slice(w.length) : a);
+  day._ind = { e9: cut(emaArr(c, 9)), e20: cut(emaArr(c, 20)), sma50: cut(smaArr(c, 50)), rsi: cut(rsiArr(c, 14)), macd: cut(m.macd), sig: cut(m.signal), hist: cut(m.hist) };
   return day._ind;
 }

@@ -58,11 +58,23 @@ export function genDataset(seed: number, endDate: string, nDays: number): Datase
   const dates = nextWeekdays(endDate, nDays);
   const days: Day[] = [];
   for (const [sym, start, prof] of profiles) {
-    let pc = start;
+    // Synthetic daily closes before the first day, so daily SMAs exist from day one.
+    const closes: number[] = [];
+    for (let k = 0, p = start * (1 + gauss(rng) * 0.15); k < 220; k++) { p *= 1 + gauss(rng) * 0.015 + (start / p - 1) * 0.02; closes.push(r2(p)); }
+    let pc = start, ph = start * 1.01, pl = start * 0.99, prev5: number[] = [];
+    const vols: number[][] = []; // 5-min slot volumes of earlier sessions (time-of-day baseline)
+    closes.push(pc);
     for (const date of dates) {
+      const sma = (n: number) => r2(closes.slice(-n).reduce((x, y) => x + y, 0) / n);
       const d = genDay(rng, sym, date, pc, prof);
+      const recent = vols.slice(-20);
+      const vol5 = recent.length >= 5 ? Array.from({ length: 78 }, (_, k) => Math.round(recent.reduce((a, v) => a + (v[k] ?? 0), 0) / recent.length)) : undefined;
+      d.ctx = { pdh: r2(ph), pdl: r2(pl), pdc: r2(pc), sma50: sma(50), sma200: sma(200), prev5, closes: closes.slice(-21), vol5 };
       days.push(d);
-      pc = d.c[d.c.length - 1];
+      pc = d.c[d.c.length - 1]; ph = Math.max(...d.h); pl = Math.min(...d.l);
+      prev5 = d.c.filter((_, i) => i % 5 === 4);
+      vols.push(Array.from({ length: 78 }, (_, k) => d.v.slice(k * 5, k * 5 + 5).reduce((a, b) => a + b, 0)));
+      closes.push(pc);
     }
   }
   return { meta: { source: DEMO_SOURCE, note: 'Randomly generated — not real prices.', symbols: profiles.map((p) => p[0]) }, days };
